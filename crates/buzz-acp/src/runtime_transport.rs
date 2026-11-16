@@ -17,7 +17,7 @@ use nostr::{Event, Keys};
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use buzz_broker_client::AuthorityFence;
+use buzz_broker_client::{AuthorityError, AuthorityFence};
 
 use crate::config::ChannelFilter;
 use crate::relay::{
@@ -359,6 +359,10 @@ impl BrokerPoller {
                         tracing::warn!(%channel_id, "broker returned the wrong channel.read outcome");
                         continue;
                     }
+                    Err(AuthorityError::ActionFailed) => {
+                        tracing::warn!(%channel_id, "broker channel read failed; retrying while authority remains active");
+                        continue;
+                    }
                     Err(error) => {
                         self.terminate(error.to_string());
                         return;
@@ -591,6 +595,7 @@ mod tests {
     use axum::routing::post;
     use axum::Router;
     use nostr::{EventBuilder, Kind, Tag};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::net::TcpListener;
 
@@ -620,6 +625,114 @@ mod tests {
 
         advance_cursor(&mut cursors, channel_id, None);
         assert!(!cursors.contains_key(&channel_id));
+    }
+
+    #[tokio::test]
+    async fn polling_retries_a_failed_relay_read_while_authority_remains_active() {
+        let channel_id = Uuid::new_v4();
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let event = EventBuilder::new(Kind::Custom(9), "after relay recovery")
+            .tags([Tag::parse(["h", &channel_id.to_string()]).unwrap()])
+            .sign_with_keys(&keys)
+            .unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let denied = Arc::new(AtomicBool::new(false));
+        let app = Router::new().route(
+            "/v1/action",
+            post({
+                let reads = Arc::clone(&reads);
+                let denied = Arc::clone(&denied);
+                move |body: Bytes| {
+                    let reads = Arc::clone(&reads);
+                    let denied = Arc::clone(&denied);
+                    let pubkey = pubkey.clone();
+                    let event = event.clone();
+                    async move {
+                        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        let request_id = request["requestId"].as_str().unwrap();
+                        let action = request["action"].as_str().unwrap();
+                        let response = if action == "channel.read"
+                            && denied.load(Ordering::SeqCst)
+                        {
+                            serde_json::json!({
+                                "type": "broker_result", "protocolVersion": 1,
+                                "requestId": request_id, "status": "failed",
+                                "error": {"code": "unauthorized", "message": "channel access denied"}
+                            })
+                        } else if action == "channel.read"
+                            && reads.fetch_add(1, Ordering::SeqCst) == 0
+                        {
+                            serde_json::json!({
+                                "type": "broker_result", "protocolVersion": 1,
+                                "requestId": request_id, "status": "failed",
+                                "error": {"code": "action_failed", "message": "relay query failed"}
+                            })
+                        } else {
+                            let outcome = match action {
+                                "storage.address" => serde_json::json!({
+                                    "authorPubkey": pubkey, "kind": 30078, "dTag": "a".repeat(64)
+                                }),
+                                "authority.status" => serde_json::json!({
+                                    "identity": {
+                                        "communityRelayUrl": "wss://relay.example.invalid",
+                                        "logicalAgentPubkey": pubkey,
+                                        "executorAgentPubkey": pubkey,
+                                        "taskId": "40b68c08-ed45-4c4b-a1d8-e46d6478d642",
+                                        "generation": "8d86e776-0f6a-418b-b7fb-4f87be556591",
+                                        "location": {"kind": "cloud", "id": "runtime-b"},
+                                        "runtimeSupport": "portable"
+                                    },
+                                    "state": "active"
+                                }),
+                                "channel.read" => serde_json::json!({"messages": [event]}),
+                                _ => panic!("unexpected action: {action}"),
+                            };
+                            serde_json::json!({
+                                "type": "broker_result", "protocolVersion": 1,
+                                "requestId": request_id, "status": "succeeded",
+                                "action": action, "outcome": outcome
+                            })
+                        };
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Body::from(response.to_string()))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (mut runtime, _) = BrokerRuntime::connect(
+            authority_fence(format!("http://{address}"), &keys.public_key().to_hex()),
+            vec![channel_id],
+            Duration::from_millis(10),
+            Keys::generate(),
+        )
+        .await
+        .unwrap();
+        runtime.set_filter(
+            channel_id,
+            Some(ChannelFilter {
+                kinds: Some(vec![9]),
+                require_mention: false,
+            }),
+        );
+        let received = tokio::time::timeout(Duration::from_secs(1), runtime.next_event())
+            .await
+            .expect("poller should retry after a relay read failure")
+            .expect("poller should remain open");
+        assert_eq!(received.event.content, "after relay recovery");
+        assert!(reads.load(Ordering::SeqCst) >= 2);
+        let authority_loss = runtime.take_authority_loss_rx().unwrap();
+        denied.store(true, Ordering::SeqCst);
+        let reason = tokio::time::timeout(Duration::from_secs(1), authority_loss)
+            .await
+            .expect("authorization denial should stop polling")
+            .unwrap();
+        assert!(reason.contains("rejected"));
     }
 
     #[tokio::test]
