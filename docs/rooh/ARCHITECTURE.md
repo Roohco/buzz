@@ -38,7 +38,7 @@ The bridges may run near their harnesses and connect outbound to the broker/rela
 | Project record / teams | Shipped as grouping | Navigation only; no implicit repo/tool authority |
 | Broker host | Status, address, channel read, message post/reply | Keyless pilot transport |
 | Broker authority/effect journal | Task/generation authority and request-ID journal | Fence and reconcile a single effect |
-| Job kinds 43001–43006 | Defined, but no complete emitter/dispatcher | Future typed task layer after pilot |
+| Job kinds 43001–43006 | Relay accepts 43001/43002/43004/43005/43006 as member-only channel events with one `h` tag (43003 rejected); no complete emitter/dispatcher yet | R5 scoped handoff path |
 | Workflow approval executor | Cannot persist/resume approval run | Do not use for merge, deploy or access grants |
 | Broker ACP peer dispatch | Owner-only sender in broker mode | No autonomous cross-agent handoff in pilot |
 | Voice broker and relay proof | Draft PR chain, not released | Future UI over the same capability checks |
