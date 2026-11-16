@@ -8,7 +8,7 @@ Status: proposed execution sequence, 2026-11-16. Scope: the Rooh-owned `Roohco/b
 
 **Organization MVP:** the Figma agent hands a candidate to a distinct QA agent through a private project handoff channel; QA checks the actual preview against complete input; a defect can trigger one bounded Figma rework and fresh QA; a human retains release authority. This is the first genuine multi-group pipeline. The existing QA-07 prepayment landing watcher is not the candidate reviewer.
 
-The current fork main is `53bc826`. The QA and Figma evidence baselines are `b126047` and `8af4a66` respectively. These are planning pins, not a promise that future runners or deployed images use them. On 2026-11-16 GitHub reports Actions enabled for the new Rooh fork, but lists zero registered workflows and zero runs. The cause is not yet established. A branch push alone does not prove CI activation because the current CI workflow triggers on main/release push or PR. Resolving and witnessing a real PR check is R0.
+The current fork main is `53bc826`. The QA and Figma evidence baselines are `b126047` and `8af4a66` respectively. These are planning pins, not a promise that future runners or deployed images use them. On 2026-11-16 the new Rooh fork initially reported Actions enabled but zero registered workflows and runs. Reapplying the repository Actions permissions through GitHub's API caused 19 workflows to register. This is an observed remediation; the original GitHub state remains uncertain. A branch push alone does not prove CI activation because the current CI workflow triggers on main/release push or PR. Witnessing a real PR check remains R0.
 
 ## 2. Dependency order
 
