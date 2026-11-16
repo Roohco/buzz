@@ -21,20 +21,21 @@ use buzz_core::kind::{
     KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
     KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
     KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST,
-    KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
-    KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST,
-    KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
-    KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
-    KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST,
-    KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
-    KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_PROJECT, KIND_REACTION,
-    KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED,
-    KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED,
-    KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM,
-    KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
-    RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE, RELAY_ADMIN_REMOVE_MEMBER,
-    RELAY_ADMIN_SET_WORKSPACE_PROFILE,
+    KIND_IA_UNARCHIVE_REQUEST, KIND_JOB_ACCEPTED, KIND_JOB_CANCEL, KIND_JOB_ERROR,
+    KIND_JOB_REQUEST, KIND_JOB_RESULT, KIND_LONG_FORM, KIND_MANAGED_AGENT,
+    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN,
+    KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
+    KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
+    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
+    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST,
+    KIND_PRESENCE_UPDATE, KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE,
+    KIND_PROJECT, KIND_REACTION, KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE,
+    KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT,
+    KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2,
+    KIND_STREAM_REMINDER, KIND_TEAM, KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS,
+    KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
+    RELAY_ADMIN_REMOVE_MEMBER, RELAY_ADMIN_SET_WORKSPACE_PROFILE,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
@@ -542,6 +543,9 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_DM_OPEN | KIND_DM_ADD_MEMBER | KIND_DM_HIDE => Ok(Scope::MessagesWrite),
         KIND_WORKFLOW_DEF | KIND_WORKFLOW_TRIGGER => Ok(Scope::MessagesWrite),
         KIND_APPROVAL_GRANT | KIND_APPROVAL_DENY => Ok(Scope::MessagesWrite),
+        // Agent job handoff: same write scope as a channel message. Progress
+        // (43003) stays rejected until a consumer needs it.
+        kind if is_job_handoff_kind(kind) => Ok(Scope::MessagesWrite),
         _ => Err("restricted: unknown event kind"),
     }
 }
@@ -700,11 +704,23 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
     )
 }
 
-/// Kinds that require an `h` tag for channel scoping.
-pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
+/// Agent job handoff kinds the relay accepts: request, accepted, result,
+/// cancel and error. Each is channel-scoped to exactly one `h` tag and is
+/// readable only through the ordinary channel-membership gate. Progress
+/// (43003) is deliberately absent.
+pub(crate) fn is_job_handoff_kind(kind: u32) -> bool {
     matches!(
         kind,
-        KIND_STREAM_MESSAGE
+        KIND_JOB_REQUEST | KIND_JOB_ACCEPTED | KIND_JOB_RESULT | KIND_JOB_CANCEL | KIND_JOB_ERROR
+    )
+}
+
+/// Kinds that require an `h` tag for channel scoping.
+pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
+    is_job_handoff_kind(kind)
+        || matches!(
+            kind,
+            KIND_STREAM_MESSAGE
             | KIND_STREAM_MESSAGE_V2
             | KIND_STREAM_MESSAGE_EDIT
             | KIND_STREAM_MESSAGE_PINNED
@@ -729,7 +745,7 @@ pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
             | KIND_HUDDLE_PARTICIPANT_LEFT
             | KIND_HUDDLE_ENDED
             | KIND_HUDDLE_GUIDELINES
-    )
+        )
 }
 
 /// Check channel membership: member OR open-visibility channel.
@@ -2463,6 +2479,21 @@ async fn ingest_event_inner(
         ));
     }
 
+    // A job handoff names exactly one channel; a second `h` tag would make the
+    // scope ambiguous to readers that pick a different one.
+    if is_job_handoff_kind(kind_u32)
+        && event
+            .tags
+            .iter()
+            .filter(|tag| tag.kind().to_string() == "h")
+            .count()
+            != 1
+    {
+        return Err(IngestError::Rejected(
+            "invalid: job events must include exactly one h tag".into(),
+        ));
+    }
+
     if let Some(ch_id) = channel_id {
         check_token_channel_access(&auth, ch_id).map_err(IngestError::AuthFailed)?;
     } else if auth.channel_ids().is_some() {
@@ -3686,6 +3717,37 @@ mod tests {
                 "kind {kind} should require h"
             );
         }
+    }
+
+    #[test]
+    fn job_handoff_kinds_are_channel_scoped_messages() {
+        let dummy = make_dummy_event();
+        for kind in [
+            KIND_JOB_REQUEST,
+            KIND_JOB_ACCEPTED,
+            KIND_JOB_RESULT,
+            KIND_JOB_CANCEL,
+            KIND_JOB_ERROR,
+        ] {
+            assert!(is_job_handoff_kind(kind), "kind {kind} is a handoff kind");
+            assert!(
+                requires_h_channel_scope(kind),
+                "kind {kind} should require h"
+            );
+            assert!(!is_global_only_kind(kind), "kind {kind} must not be global");
+            assert_eq!(
+                required_scope_for_kind(kind, &dummy).ok(),
+                required_scope_for_kind(KIND_STREAM_MESSAGE, &dummy).ok(),
+                "kind {kind} uses the channel-message write scope"
+            );
+        }
+    }
+
+    #[test]
+    fn job_progress_stays_rejected() {
+        let dummy = make_dummy_event();
+        assert!(!is_job_handoff_kind(buzz_core::kind::KIND_JOB_PROGRESS));
+        assert!(required_scope_for_kind(buzz_core::kind::KIND_JOB_PROGRESS, &dummy).is_err());
     }
 
     #[test]
