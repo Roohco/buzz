@@ -10,8 +10,10 @@ use buzz_sdk::broker::{
 use nostr::{EventBuilder, Keys, Kind, Tag};
 use std::os::unix::fs::PermissionsExt as _;
 
+mod regressions;
+
 use crate::credential::{self, CredentialDigest};
-use crate::store::peer::{PeerColumn, PeerGrantFile, PeerStep};
+use crate::store::peer::{PeerGrantFile, PeerKey, PeerStep};
 
 const NOW: u64 = 1_800_000_000;
 const OTHER_CHANNEL: &str = "6a1d1b36-6b54-4d55-9c1e-4a6f0f1b2c3d";
@@ -33,8 +35,12 @@ struct Pilot {
 }
 
 fn agent_identity(keys: &Keys, task_id: &str, generation: &str) -> AuthorityIdentity {
+    relay_identity("wss://relay.example", keys, task_id, generation)
+}
+
+fn relay_identity(relay: &str, keys: &Keys, task_id: &str, generation: &str) -> AuthorityIdentity {
     serde_json::from_value(serde_json::json!({
-        "communityRelayUrl": "wss://relay.example",
+        "communityRelayUrl": relay,
         "logicalAgentPubkey": keys.public_key().to_hex(),
         "executorAgentPubkey": keys.public_key().to_hex(),
         "taskId": task_id,
@@ -66,6 +72,10 @@ async fn issue_agent(store: &AuthorityStore, identity: &AuthorityIdentity) -> Cr
 
 impl Pilot {
     async fn new() -> Self {
+        Self::with_relay("wss://relay.example").await
+    }
+
+    async fn with_relay(relay: &str) -> Self {
         let directory = tempfile::tempdir().expect("tempdir");
         make_private_directory(directory.path());
         let path = directory.path().to_path_buf();
@@ -79,7 +89,7 @@ impl Pilot {
             ("qa", "33333333-3333-4333-8333-333333333333"),
         ] {
             let keys = Keys::generate();
-            let identity = agent_identity(&keys, task, GENERATION);
+            let identity = relay_identity(relay, &keys, task, GENERATION);
             let credential = issue_agent(&store, &identity).await;
             agents.push(Agent {
                 signer: signer_for(&path, name, &keys, &owner),
@@ -135,7 +145,7 @@ impl Pilot {
             panic!("granted request must be signed for publication");
         };
         self.store
-            .mark_peer_published(PeerColumn::Request, &event.id.to_hex())
+            .mark_peer_published(&PeerKey::Request(event.id.to_hex()))
             .await
             .expect("mark published");
         event
@@ -232,7 +242,7 @@ async fn granted_request_is_accepted_once_and_result_links_the_same_identity() {
         .unwrap()
         .unwrap();
     assert_eq!(step.admission.decision, JobDecision::Accepted);
-    let (accepted, retry) = step.publish.expect("acceptance is published");
+    let (accepted, retry, _) = step.publish.expect("acceptance is published");
     assert!(!retry);
     assert_eq!(accepted.kind.as_u16(), 43002);
     assert_eq!(
@@ -252,7 +262,7 @@ async fn granted_request_is_accepted_once_and_result_links_the_same_identity() {
     // Lost acknowledgement: the unpublished decision is replayed, not re-signed.
     let replay = pilot
         .store
-        .recorded_decision(&pilot.qa.credential, CHANNEL_ID, None)
+        .recorded_decision(&pilot.qa.signer.pubkey_hex(), CHANNEL_ID, None)
         .await
         .unwrap()
         .expect("pending decision is reconcilable");
@@ -260,12 +270,15 @@ async fn granted_request_is_accepted_once_and_result_links_the_same_identity() {
         replay
             .publish
             .as_ref()
-            .map(|(event, retry)| (event.id, *retry)),
+            .map(|(event, retry, _)| (event.id, *retry)),
         Some((accepted.id, true))
     );
     pilot
         .store
-        .mark_peer_published(PeerColumn::Decision, &request.id.to_hex())
+        .mark_peer_published(&PeerKey::Decision(
+            request.id.to_hex(),
+            pilot.qa.signer.pubkey_hex(),
+        ))
         .await
         .unwrap();
 
@@ -302,7 +315,7 @@ async fn granted_request_is_accepted_once_and_result_links_the_same_identity() {
     };
     let PeerStep::Publish { event: result, .. } = pilot
         .store
-        .prepare_job_result(&pilot.qa.credential, &pilot.qa.signer, &result_args)
+        .prepare_job_result(&pilot.qa.credential, &pilot.qa.signer, &result_args, NOW)
         .await
         .unwrap()
     else {
@@ -328,12 +341,15 @@ async fn granted_request_is_accepted_once_and_result_links_the_same_identity() {
     );
     pilot
         .store
-        .mark_peer_published(PeerColumn::Result, &request.id.to_hex())
+        .mark_peer_published(&PeerKey::Result(
+            request.id.to_hex(),
+            pilot.qa.signer.pubkey_hex(),
+        ))
         .await
         .unwrap();
     match pilot
         .store
-        .prepare_job_result(&pilot.qa.credential, &pilot.qa.signer, &result_args)
+        .prepare_job_result(&pilot.qa.credential, &pilot.qa.signer, &result_args, NOW)
         .await
         .unwrap()
     {
@@ -345,7 +361,7 @@ async fn granted_request_is_accepted_once_and_result_links_the_same_identity() {
     assert!(matches!(
         pilot
             .store
-            .prepare_job_result(&pilot.qa.credential, &pilot.qa.signer, &different)
+            .prepare_job_result(&pilot.qa.credential, &pilot.qa.signer, &different, NOW)
             .await
             .unwrap(),
         PeerStep::Refuse(_)
@@ -609,6 +625,7 @@ async fn cancel_is_terminal_before_and_after_acceptance() {
                     summary: "late".into(),
                     evidence_sha256: None,
                 },
+                NOW,
             )
             .await
             .unwrap(),

@@ -69,6 +69,20 @@ impl AuthorityStore {
         .fetch_one(&mut *transaction)
         .await
         .map_err(|_| StoreError::Unavailable)?;
+        #[cfg(unix)]
+        let pending = pending || {
+            let hash: Option<Vec<u8>> = sqlx::query_scalar(
+                "SELECT credential_hash FROM broker_authorities WHERE authority_json = ?",
+            )
+            .bind(&authority_json)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+            match hash {
+                Some(hash) => super::peer::peer_effects_pending(&mut transaction, &hash).await?,
+                None => false,
+            }
+        };
         if pending {
             return Err(StoreError::EffectsPending);
         }

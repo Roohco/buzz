@@ -11,6 +11,13 @@ use sha2::{Digest as _, Sha256};
 
 use crate::signing::HostSigner;
 
+/// Position below which the next older job-request page starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JobPageCursor {
+    pub(crate) created_at: u64,
+    pub(crate) event_id: String,
+}
+
 pub(crate) struct RelayPublisher {
     client: reqwest::Client,
 }
@@ -130,18 +137,22 @@ impl RelayPublisher {
         Ok(event)
     }
 
-    /// Read signed job requests (43001) addressed to this signer in one
-    /// channel, oldest first. With `request_event_id`, only that event.
+    /// Read one page of signed job requests (43001) in one channel, oldest
+    /// first, plus the cursor for the next older page when this one was full.
     ///
-    /// Every returned event is verified here and carries exactly one `h` tag
-    /// for the channel; admission still re-checks everything it relies on.
+    /// With `request_event_id`, only that event. Otherwise requests that
+    /// p-tag this signer, newest page first; `before` continues below the
+    /// oldest event of the previous page so older requests are reachable.
+    /// Every returned event is verified and carries exactly one `h` tag for
+    /// the channel; admission still re-checks everything it relies on.
     pub(crate) async fn query_job_requests(
         &self,
         signer: &HostSigner,
         community_relay_url: &str,
         channel_id: &str,
         request_event_id: Option<&str>,
-    ) -> Result<Vec<Event>, PublishError> {
+        before: Option<&JobPageCursor>,
+    ) -> Result<(Vec<Event>, Option<JobPageCursor>), PublishError> {
         let url = relay_endpoint(community_relay_url, "/query")?;
         let mut filter = serde_json::json!({
             "kinds": [buzz_core::kind::KIND_JOB_REQUEST],
@@ -151,6 +162,10 @@ impl RelayPublisher {
         match request_event_id {
             Some(id) => filter["ids"] = serde_json::json!([id]),
             None => filter["#p"] = serde_json::json!([signer.pubkey_hex()]),
+        }
+        if let Some(cursor) = before {
+            filter["until"] = serde_json::json!(cursor.created_at);
+            filter["before_id"] = serde_json::json!(cursor.event_id);
         }
         let body = serde_json::to_vec(&serde_json::json!([filter]))
             .map_err(|_| PublishError::InvalidEvent)?;
@@ -186,6 +201,22 @@ impl RelayPublisher {
         if events.len() > MAX_READ_PAGE_EVENTS as usize {
             return Err(PublishError::InvalidEvent);
         }
+        let full = request_event_id.is_none() && events.len() == MAX_READ_PAGE_EVENTS as usize;
+        let next = if full {
+            events
+                .iter()
+                .min_by(|left, right| {
+                    left.created_at
+                        .cmp(&right.created_at)
+                        .then_with(|| left.id.cmp(&right.id))
+                })
+                .map(|oldest| JobPageCursor {
+                    created_at: oldest.created_at.as_secs(),
+                    event_id: oldest.id.to_hex(),
+                })
+        } else {
+            None
+        };
         events.retain(|event| {
             let channels: Vec<_> = event
                 .tags
@@ -197,13 +228,17 @@ impl RelayPublisher {
                 && channels.len() == 1
                 && channels[0].content() == Some(channel_id)
                 && request_event_id.is_none_or(|id| event.id.to_hex() == id)
+                && before.is_none_or(|cursor| {
+                    (event.created_at.as_secs(), event.id.to_hex())
+                        < (cursor.created_at, cursor.event_id.clone())
+                })
         });
         events.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        Ok(events)
+        Ok((events, next))
     }
 
     pub(crate) async fn query_channel(

@@ -27,9 +27,11 @@ mod effect_lock;
 mod lifecycle;
 #[cfg(unix)]
 pub(crate) mod peer;
+#[cfg(unix)]
+pub(crate) mod peer_admit;
 
 #[cfg(unix)]
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 6;
 #[cfg(unix)]
 const EFFECTS_TABLE_SQL: &str = "CREATE TABLE broker_effects (
     credential_hash BLOB NOT NULL,
@@ -130,7 +132,6 @@ impl AuthorityStore {
                 3 => self.migrate_schema_v4().await?,
                 4 => self.migrate_schema_v5().await?,
                 5 => self.migrate_schema_v6().await?,
-                6 => self.migrate_schema_v7().await?,
                 SCHEMA_VERSION => break,
                 _ => return Err(StoreError::UnsupportedSchema),
             }
@@ -142,6 +143,9 @@ impl AuthorityStore {
         if integrity != "ok" {
             return Err(StoreError::Integrity);
         }
+        // Additive peer tables keep the schema version, so the previous broker
+        // release still opens this state on rollback.
+        self.ensure_peer_tables().await?;
         self.validate_authority_state().await?;
         self.validate_effect_state().await
     }

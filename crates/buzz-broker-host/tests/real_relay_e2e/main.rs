@@ -25,6 +25,7 @@
 #![cfg(unix)]
 
 mod acp_liveness;
+mod n_minus_1;
 mod r5_peer;
 mod rollback;
 mod support;

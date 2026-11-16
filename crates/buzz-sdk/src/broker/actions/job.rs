@@ -253,9 +253,14 @@ impl JobRequestArgs {
 
 /// Arguments for `job.admit`: let the recipient host decide one pending request.
 ///
-/// Without `requestEventId` the host decides the oldest undecided request
-/// addressed to this agent in the channel; with it, that exact request (or
-/// replays its recorded decision).
+/// Without `requestEventId` the host decides one undecided request addressed
+/// to this agent in the channel (newest pages first, paging back until one is
+/// found); with it, that exact request, or it replays the recorded decision.
+///
+/// A ticket is a work input only for the request it names: a replayed
+/// `accepted` decision (the response is marked replayed) resumes that same run
+/// and must never start a second one, and a `completed` decision carries no
+/// ticket at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JobAdmitArgs {
@@ -396,6 +401,9 @@ pub enum JobDecision {
     Denied,
     /// The sender cancelled before admission or before a result.
     Cancelled,
+    /// A replayed decision for a job whose result is already recorded. It
+    /// carries no ticket: a completed job never starts work again.
+    Completed,
 }
 
 /// The admitted job a recipient runtime may work on.
@@ -427,7 +435,8 @@ pub struct JobAdmission {
         skip_serializing_if = "Option::is_none"
     )]
     pub request_event_id: Option<String>,
-    /// Signed acceptance (43002) or error (43006) event.
+    /// Signed acceptance (43002), denial (43006) or, for a completed job,
+    /// its result event.
     #[serde(
         default,
         deserialize_with = "absent_or_valued_hex64",
@@ -467,8 +476,11 @@ impl JobAdmission {
         let expected = match self.decision {
             JobDecision::None => (false, false, false, false),
             JobDecision::Accepted => (true, true, false, true),
-            JobDecision::Denied => (true, true, true, false),
+            // A denial normally carries its signed 43006; one recorded for an
+            // undecidable request carries only the reason.
+            JobDecision::Denied => (true, self.decision_event_id.is_some(), true, false),
             JobDecision::Cancelled => (true, false, false, false),
+            JobDecision::Completed => (true, true, false, false),
         };
         if shape != expected {
             return Err(SdkError::InvalidInput(
