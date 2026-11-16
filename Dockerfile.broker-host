@@ -19,6 +19,8 @@ RUN cargo build --locked --profile sprig -p buzz-broker-host \
     && strip target/sprig/buzz-broker-host
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision="${VCS_REF}"
 RUN apk add --no-cache ca-certificates curl \
     && adduser -D -u 1000 -h /home/broker broker
 COPY --from=builder --chmod=0755 /build/target/sprig/buzz-broker-host /usr/local/bin/buzz-broker-host

@@ -32,6 +32,25 @@ The same smoke runs in the path-scoped **Managed Agent Runtime Smoke** GitHub
 workflow for launcher changes and can also be dispatched manually. It builds
 an image and a second Rust binary, so unrelated PRs do not run it.
 
+### Rooh broker canary image
+
+After the reviewed change reaches `Roohco/buzz:main`, an operator can dispatch
+that workflow on `main`. The synthetic Compose smoke must pass before its
+separate publish job can push `ghcr.io/roohco/buzz-broker-host:sha-<full commit>`.
+PR runs have read-only permissions and never publish. The publish job also
+requires a manual dispatch from the Rooh repository's `main` ref.
+
+```bash
+gh workflow run managed-agent-smoke.yml --repo Roohco/buzz --ref main
+```
+
+Open the run URL printed by the command and record its full source commit and
+`ghcr.io/roohco/buzz-broker-host@sha256:…` digest. Verify the registry
+attestation with `gh attestation verify oci://ghcr.io/roohco/buzz-broker-host@sha256:… --owner Roohco`.
+The tag is a locator; pin the digest in the canary `.env`. This workflow does
+not launch an agent or change the relay. A real signed task/reply/fence test is
+still required before the R1 gate can pass.
+
 On a Linux host, prepare distinct bind paths owned by UID/GID 1000:
 
 ```bash
