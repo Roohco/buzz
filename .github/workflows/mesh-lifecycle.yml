@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'crates/buzz-relay/examples/mesh_*.rs'
+      - 'crates/buzz-mesh-smoke/**'
       - 'crates/buzz-relay/Cargo.toml'
       - 'crates/buzz-admin/**'
       - 'crates/buzz-test-client/**'
@@ -22,7 +22,7 @@ on:
       - 'scripts/start-relay-for-tests.sh'
   pull_request:
     paths:
-      - 'crates/buzz-relay/examples/mesh_*.rs'
+      - 'crates/buzz-mesh-smoke/**'
       - 'crates/buzz-relay/Cargo.toml'
       - 'crates/buzz-admin/**'
       - 'crates/buzz-test-client/**'
@@ -57,7 +57,8 @@ jobs:
 
       # The mesh-llm SDK downloads a signed native runtime (llama.cpp CPU
       # build) on first init, and the serve node downloads the smoke model
-      # from HuggingFace on first run. Key on the lockfile so a mesh pin bump
+      # from HuggingFace on first run. Key on the smoke crate's own lockfile
+      # (mesh-llm is not in the root lockfile) so a mesh pin bump
       # rolls the runtime cache; the model ref is stable.
       - name: Restore mesh runtime + model caches
         id: mesh-caches
@@ -66,7 +67,7 @@ jobs:
           path: |
             ~/.cache/mesh-llm/native-runtimes
             ~/.cache/huggingface/hub
-          key: mesh-lifecycle-${{ runner.os }}-smollm2-135m-${{ hashFiles('Cargo.lock') }}
+          key: mesh-lifecycle-${{ runner.os }}-smollm2-135m-${{ hashFiles('crates/buzz-mesh-smoke/Cargo.lock') }}
           restore-keys: |
             mesh-lifecycle-${{ runner.os }}-smollm2-135m-
 
@@ -94,7 +95,7 @@ jobs:
           path: |
             ~/.cache/mesh-llm/native-runtimes
             ~/.cache/huggingface/hub
-          key: mesh-lifecycle-${{ runner.os }}-smollm2-135m-${{ hashFiles('Cargo.lock') }}
+          key: mesh-lifecycle-${{ runner.os }}-smollm2-135m-${{ hashFiles('crates/buzz-mesh-smoke/Cargo.lock') }}
 
       - name: Upload relay + harness logs
         if: failure()

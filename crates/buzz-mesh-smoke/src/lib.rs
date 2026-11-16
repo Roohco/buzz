@@ -1,0 +1,9 @@
+//! Mesh smoke harnesses.
+//!
+//! This crate deliberately carries no library code. It exists so the
+//! mesh-llm SDK and native runtime can be a dev-dependency of the smoke
+//! harnesses in `examples/` without entering `buzz-relay`'s test graph
+//! (or the root workspace lockfile).
+//!
+//! See `examples/` for the harnesses and `scripts/ci-mesh-lifecycle-smoke.sh`
+//! for the CI entry point.

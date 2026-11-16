@@ -327,6 +327,8 @@ test-unit:
         cargo nextest run -p buzz-broker-host
         cargo nextest run -p buzz-voice --lib
         cargo nextest run -p buzz-cli
+        # Exercise the real MCP server for modern and legacy clients.
+        cargo nextest run -p buzz-dev-mcp
         # buzz-db migrator/lint tests: pure SQL-parsing unit tests (no infra).
         # They guard the embedded-migrator invariant (exactly the consolidated
         # 0001; cutover/backfill stays an operator script, not startup state)
@@ -401,23 +403,23 @@ mesh-dev-fresh:
 mesh-e2e-hardware:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run -p buzz-relay --example mesh_serve_client_smoke
+    cargo run --manifest-path crates/buzz-mesh-smoke/Cargo.toml --target-dir target --example mesh_serve_client_smoke
 
 # Three isolated node processes: trusted member joins and infers; stranger is rejected.
 # Uses temp homes and explicit mesh owner keystores. Never reads the Buzz Keychain.
 mesh-e2e-admission:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run -p buzz-relay --example mesh_admission_smoke
+    cargo run --manifest-path crates/buzz-mesh-smoke/Cargo.toml --target-dir target --example mesh_admission_smoke
 
 # Full hardware confidence suite: routing, owner admission, and real agent inference.
 mesh-e2e-confidence:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --release -p buzz-agent -p buzz-dev-mcp
-    cargo run -p buzz-relay --example mesh_serve_client_smoke
-    cargo run -p buzz-relay --example mesh_admission_smoke
-    cargo run -p buzz-relay --example mesh_agent_e2e
+    cargo run --manifest-path crates/buzz-mesh-smoke/Cargo.toml --target-dir target --example mesh_serve_client_smoke
+    cargo run --manifest-path crates/buzz-mesh-smoke/Cargo.toml --target-dir target --example mesh_admission_smoke
+    cargo run --manifest-path crates/buzz-mesh-smoke/Cargo.toml --target-dir target --example mesh_agent_e2e
 
 # Take desktop screenshots using the mock bridge
 desktop-screenshot *ARGS:
