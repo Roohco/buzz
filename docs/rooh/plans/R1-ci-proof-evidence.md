@@ -145,11 +145,13 @@ broker/identity change and is not part of this proof.
 
 ## Remaining for R1
 
-1. **RustSec baseline.** Broker-tree advisories remain a separate public-pilot
-   blocker.
-
-The deployed-image run and the rollback rehearsal are closed by the
-[pinned run](#pinned-published-artifacts).
+None. The RustSec baseline closed with PR #7: the `Security` job on main
+`539f864a` (run https://github.com/Roohco/buzz/actions/runs/43940573381) passed
+for the first time in the fork, with reasoned ignores and bans for
+RUSTSEC-2026-0459, RUSTSEC-2026-0462 and RUSTSEC-2024-0449 in `deny.toml`. The
+deployed-image run and the rollback rehearsal are closed by the
+[pinned run](#pinned-published-artifacts). R1 is done; R2–R4 adapters connect
+to the broker next.
 
 ## Rollback
 
