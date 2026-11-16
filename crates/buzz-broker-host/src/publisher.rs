@@ -18,6 +18,16 @@ pub(crate) struct JobPageCursor {
     pub(crate) event_id: String,
 }
 
+impl JobPageCursor {
+    /// Whether `event` comes after this cursor in the relay's page order
+    /// (`created_at DESC, id ASC`).
+    pub(crate) fn precedes(&self, event: &Event) -> bool {
+        let created_at = event.created_at.as_secs();
+        created_at < self.created_at
+            || (created_at == self.created_at && event.id.to_hex() > self.event_id)
+    }
+}
+
 pub(crate) struct RelayPublisher {
     client: reqwest::Client,
 }
@@ -202,13 +212,17 @@ impl RelayPublisher {
             return Err(PublishError::InvalidEvent);
         }
         let full = request_event_id.is_none() && events.len() == MAX_READ_PAGE_EVENTS as usize;
+        // The relay orders `created_at DESC, id ASC` and continues a page with
+        // `created_at < until OR (created_at = until AND id > before_id)`, so
+        // the cursor is the last event in that order: the oldest second, and
+        // the highest id within it.
         let next = if full {
             events
                 .iter()
                 .min_by(|left, right| {
                     left.created_at
                         .cmp(&right.created_at)
-                        .then_with(|| left.id.cmp(&right.id))
+                        .then_with(|| right.id.cmp(&left.id))
                 })
                 .map(|oldest| JobPageCursor {
                     created_at: oldest.created_at.as_secs(),
@@ -228,10 +242,7 @@ impl RelayPublisher {
                 && channels.len() == 1
                 && channels[0].content() == Some(channel_id)
                 && request_event_id.is_none_or(|id| event.id.to_hex() == id)
-                && before.is_none_or(|cursor| {
-                    (event.created_at.as_secs(), event.id.to_hex())
-                        < (cursor.created_at, cursor.event_id.clone())
-                })
+                && before.is_none_or(|cursor| cursor.precedes(event))
         });
         events.sort_by(|left, right| {
             left.created_at

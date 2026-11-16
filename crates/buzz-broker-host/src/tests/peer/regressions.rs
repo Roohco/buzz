@@ -245,60 +245,53 @@ async fn completed_replay_has_no_ticket_and_results_recheck_authority() {
     );
 }
 
-/// 3. `job.admit` pages past a full page of already-decided newer requests,
-///    so older undecided requests are never starved.
-#[tokio::test]
-async fn admit_pages_past_decided_requests_to_older_ones() {
+/// A fake relay with the real relay's job-request paging: `created_at DESC,
+/// id ASC`, continued by `created_at < until OR (created_at = until AND id >
+/// before_id)` (buzz-db `query_events`). Publication is acknowledged.
+type Served = Arc<std::sync::Mutex<Vec<nostr::Event>>>;
+
+async fn fake_relay() -> (String, tokio::task::JoinHandle<()>, Served) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("ws://{}", listener.local_addr().unwrap());
-    let pilot = Pilot::with_relay(&relay).await;
-    let outsider = Keys::generate();
-    let base = handoff("starve", SHA_A);
-    let mut requests = Vec::new();
-    for offset in 0..20_u64 {
-        let mut tags = vec![
-            Tag::parse(["h", CHANNEL_ID]).unwrap(),
-            Tag::parse(["p", &pilot.qa.keys.public_key().to_hex()]).unwrap(),
-        ];
-        for (name, value) in base.tag_pairs() {
-            tags.push(Tag::parse([name, value.as_str()]).unwrap());
-        }
-        requests.push(
-            EventBuilder::new(Kind::Custom(43001), format!("crafted {offset}"))
-                .tags(tags)
-                .custom_created_at(Timestamp::from(NOW - 100 + offset))
-                .sign_with_keys(&outsider)
-                .unwrap(),
-        );
-    }
-    let stored = Arc::new(requests.clone());
+    let stored: Served = Arc::default();
+    let served = Arc::clone(&stored);
     let app = Router::new()
         .route(
             "/query",
-            post({
+            post(move |body: Bytes| {
                 let stored = Arc::clone(&stored);
-                move |body: Bytes| {
-                    let stored = Arc::clone(&stored);
-                    async move {
-                        let filters: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                        let filter = &filters[0];
-                        let limit = filter["limit"].as_u64().unwrap() as usize;
-                        let mut page: Vec<_> = stored
-                            .iter()
-                            .filter(|event| {
-                                filter.get("until").is_none_or(|until| {
-                                    let until = until.as_u64().unwrap();
-                                    let before = filter["before_id"].as_str().unwrap();
-                                    (event.created_at.as_secs(), event.id.to_hex())
-                                        < (until, before.to_owned())
-                                })
+                async move {
+                    let filters: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let filter = &filters[0];
+                    let limit = filter["limit"].as_u64().unwrap() as usize;
+                    let mut page: Vec<_> = stored
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|event| {
+                            filter.get("until").is_none_or(|until| {
+                                let until = until.as_u64().unwrap();
+                                let created = event.created_at.as_secs();
+                                match filter["before_id"].as_str() {
+                                    Some(before) => {
+                                        created < until
+                                            || (created == until
+                                                && event.id.to_hex().as_str() > before)
+                                    }
+                                    None => created <= until,
+                                }
                             })
-                            .cloned()
-                            .collect();
-                        page.sort_by_key(|event| std::cmp::Reverse(event.created_at));
-                        page.truncate(limit);
-                        axum::Json(serde_json::json!(page)).into_response()
-                    }
+                        })
+                        .cloned()
+                        .collect();
+                    page.sort_by(|left, right| {
+                        right
+                            .created_at
+                            .cmp(&left.created_at)
+                            .then_with(|| left.id.to_hex().cmp(&right.id.to_hex()))
+                    });
+                    page.truncate(limit);
+                    axum::Json(serde_json::json!(page)).into_response()
                 }
             }),
         )
@@ -315,20 +308,37 @@ async fn admit_pages_past_decided_requests_to_older_ones() {
             }),
         );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (relay, server, served)
+}
 
-    // The newest 16 (one full page) are already decided and published.
-    let me = pilot.qa.signer.pubkey_hex();
-    for event in &requests[4..] {
-        pilot.decide(event).await;
-        pilot
-            .store
-            .mark_peer_published(&PeerKey::Decision(event.id.to_hex(), me.clone()))
-            .await
-            .unwrap();
-    }
+/// Ungranted requests from one outsider at the given creation times.
+fn outsider_requests(pilot: &Pilot, outsider: &Keys, times: &[u64]) -> Vec<nostr::Event> {
+    let base = handoff("starve", SHA_A);
+    times
+        .iter()
+        .enumerate()
+        .map(|(index, created_at)| {
+            let mut tags = vec![
+                Tag::parse(["h", CHANNEL_ID]).unwrap(),
+                Tag::parse(["p", &pilot.qa.keys.public_key().to_hex()]).unwrap(),
+            ];
+            for (name, value) in base.tag_pairs() {
+                tags.push(Tag::parse([name, value.as_str()]).unwrap());
+            }
+            EventBuilder::new(Kind::Custom(43001), format!("crafted {index}"))
+                .tags(tags)
+                .custom_created_at(Timestamp::from(*created_at))
+                .sign_with_keys(outsider)
+                .unwrap()
+        })
+        .collect()
+}
+
+/// Run one scanning `job.admit` and return the decided request id, if any.
+async fn admit_scan(pilot: &Pilot) -> Option<String> {
     let publisher = RelayPublisher::new().unwrap();
     let admit = BrokerRequest::new(
-        "admit-older",
+        "admit-scan",
         ActionArgs::JobAdmit(JobAdmitArgs {
             channel_id: CHANNEL_ID.into(),
             request_event_id: None,
@@ -352,13 +362,93 @@ async fn admit_pages_past_decided_requests_to_older_ones() {
     else {
         panic!("admit succeeds");
     };
-    assert_eq!(admission.decision, JobDecision::Denied);
-    let decided = admission.request_event_id.expect("an older request");
-    assert!(
-        requests[..4]
-            .iter()
-            .any(|event| event.id.to_hex() == decided),
-        "an older, previously starved request was decided"
+    match admission.decision {
+        JobDecision::None => None,
+        JobDecision::Denied => admission.request_event_id,
+        other => panic!("unexpected decision {other:?}"),
+    }
+}
+
+/// Decide `events` directly and mark their denials published.
+async fn decide_published(pilot: &Pilot, events: &[nostr::Event]) {
+    let me = pilot.qa.signer.pubkey_hex();
+    for event in events {
+        pilot.decide(event).await;
+        pilot
+            .store
+            .mark_peer_published(&PeerKey::Decision(event.id.to_hex(), me.clone()))
+            .await
+            .unwrap();
+    }
+}
+
+/// Drain every remaining undecided request through scanning admits.
+async fn admit_all(pilot: &Pilot, limit: usize) -> Vec<String> {
+    let mut decided = Vec::new();
+    while let Some(id) = admit_scan(pilot).await {
+        decided.push(id);
+        assert!(decided.len() <= limit, "admit repeats a decided request");
+    }
+    decided
+}
+
+/// 3. `job.admit` pages past a full page of already-decided newer requests,
+///    so older undecided requests are never starved.
+#[tokio::test]
+async fn admit_pages_past_decided_requests_to_older_ones() {
+    let times: Vec<u64> = (0..20).map(|offset| NOW - 100 + offset).collect();
+    let (server, pilot, requests) = relay_with_requests(&times).await;
+    // The newest 16 (one full page) are already decided and published.
+    decide_published(&pilot, &requests[4..]).await;
+    let mut decided = admit_all(&pilot, 4).await;
+    decided.sort();
+    let mut expected: Vec<String> = requests[..4].iter().map(|e| e.id.to_hex()).collect();
+    expected.sort();
+    assert_eq!(
+        decided, expected,
+        "every older, previously starved request is decided"
     );
     server.abort();
+}
+
+/// 3b. Requests sharing one second across a page boundary are all reached:
+///     the cursor follows the relay's `created_at DESC, id ASC` order.
+#[tokio::test]
+async fn admit_reaches_same_second_requests_across_a_page_boundary() {
+    // 12 newer requests, then 8 in one older second: the first page ends
+    // inside that second.
+    let mut times: Vec<u64> = vec![NOW - 10; 8];
+    times.extend(std::iter::repeat_n(NOW - 5, 12));
+    let (server, pilot, requests) = relay_with_requests(&times).await;
+    let mut relay_order = requests.clone();
+    relay_order.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| left.id.to_hex().cmp(&right.id.to_hex()))
+    });
+    // Everything on the relay's first page is already decided.
+    decide_published(&pilot, &relay_order[..16]).await;
+    let mut decided = admit_all(&pilot, 4).await;
+    decided.sort();
+    let mut expected: Vec<String> = relay_order[16..].iter().map(|e| e.id.to_hex()).collect();
+    expected.sort();
+    assert_eq!(
+        decided, expected,
+        "same-second requests after the boundary are reached"
+    );
+    server.abort();
+}
+
+/// Start a fake relay, build a pilot on it and serve requests addressed to
+/// its QA identity at `times`.
+async fn relay_with_requests(
+    times: &[u64],
+) -> (tokio::task::JoinHandle<()>, Pilot, Vec<nostr::Event>) {
+    let (relay, server, served) = fake_relay().await;
+    let pilot = Pilot::with_relay(&relay).await;
+    let outsider = Keys::generate();
+    let requests = outsider_requests(&pilot, &outsider, times);
+    served.lock().unwrap().extend(requests.iter().cloned());
+    (server, pilot, requests)
 }
