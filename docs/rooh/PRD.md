@@ -8,7 +8,7 @@ Rooh already has specialized QA and Figma2Code/Strands agents. Their work, evide
 
 The desired outcome is a shared, searchable workspace in Buzz where people and agents can discuss work, follow its provenance, hand off bounded tasks, and review results while each project retains its tested execution harness and source of truth.
 
-Success is demonstrated by two live, independently reviewable paths: one QA result appears once in a Buzz project channel with its exact source task and evidence; one approved Figma screen yields an explicitly unvalidated candidate with exact design/source identity. Neither path creates unauthorized product, payment or release effects.
+The initial pilot is demonstrated by two live, independently reviewable paths: one QA result appears once in a Buzz project channel with its exact source task and evidence; one approved Figma screen yields an explicitly unvalidated candidate with exact design/source identity. The organization MVP additionally requires one real cross-group pipeline in which the Figma agent hands that exact candidate to a QA agent, receives a revision-bound verdict, and either presents it for human review or performs one bounded rework and requests QA again. Neither milestone creates unauthorized product, payment or release effects.
 
 ## 2. Users and jobs
 
@@ -34,6 +34,8 @@ Delivery mode: STANDARD for product scope, DEEP for the cross-system authority a
 
 Provisional engineering size: slice 0 **M / 3–5 working days**, QA projection **M / 3–5 days**, Figma candidate **M / 4–7 days**, assuming the existing CI and protected runner access work. Re-estimate after the real-relay proof; these ranges are not release commitments. Slice 0 is the first independently verifiable vertical delivery. Expected components are Buzz broker/ACP and relay integration tests for slice 0, QA watcher completion marker plus one bridge for slice 1, and one Figma bridge using existing commands for slice 2. The local and release gates are in [DoD](DOD.md).
 
+The cross-group extension is a separate estimate: candidate QA capability **M / 4–7 days**, scoped peer handoff **L / 7–12 days**, bounded pipeline and repair integration **L / 5–10 days**. These depend on the pilot and are re-estimated after the candidate input and repair contracts are tested. The [technical roadmap](ROADMAP.md) gives dependency gates, not a calendar promise.
+
 ### MUST NOW: initial pilot
 
 - A dedicated Rooh fork and one private Rooh project channel with a human owner and one separately identified broker-backed agent.
@@ -47,6 +49,13 @@ Provisional engineering size: slice 0 **M / 3–5 working days**, QA projection 
 
 - Correlate Buzz event ID, source ID/version, run ID, broker request ID, artifact hash and trace ID in a protected run ledger. This closes the current provenance gap between signed messages and broker effects.
 - Record run duration, model cost estimate, reviewer time and false-positive/invalid-input counts. These decide whether the next capability earns its complexity.
+
+### MUST FOR THE ORGANIZATION MVP: after the initial pilot
+
+- One private handoff channel per delivery project shared by the Figma and QA agent identities and the human owner. Each group retains its own private working channel; the handoff carries only the minimum cross-group task and evidence references.
+- An independent `qa.review_candidate` capability that tests the actual isolated candidate preview against the complete screen/task input and reports a verdict tied to the candidate SHA. Existing QA-07 landing checks cannot be relabeled as this capability.
+- An explicit broker grant that allows the Figma agent to request only that QA capability. The QA agent accepts or rejects the signed request; an ungranted peer cannot trigger a run.
+- One `pipeline_id` joining Figma generation, QA review, optional rework and final human decision. A new candidate invalidates the previous candidate's QA verdict. At most one automated rework is allowed before a human decides.
 
 ### NOT NOW
 
@@ -67,6 +76,10 @@ Provisional engineering size: slice 0 **M / 3–5 working days**, QA projection 
 | FR-06 | Figma candidate is labeled honestly | G0 generation-only exit 2 records `generated_not_release_validated`, with browser, visual and release checks `not_run` |
 | FR-07 | Significant effects require the right authority | Buzz membership alone cannot trigger payment, product write, merge, deploy or access grant |
 | FR-08 | Operator can see and recover a stopped run | Generation fence prevents an old body from starting new broker effects; unresolved effects are surfaced for reconciliation |
+| FR-09 | Work crosses Figma and QA groups without exposing internal group channels | A project handoff channel shows one pipeline ID, exact parent/child task links, candidate SHA and protected evidence references |
+| FR-10 | Figma agent can request a bounded QA review | QA agent accepts/rejects a signed `qa.review_candidate` task; a non-granted peer or wrong candidate is denied before browser work |
+| FR-11 | QA independently checks the actual candidate | QA result is based on an isolated preview plus complete design/task context and is tied to the candidate SHA; QA-07's landing verdict is not substituted |
+| FR-12 | Defect feedback closes a bounded loop | A defect can cause one repaired candidate linked to the prior SHA and QA evidence, then one new QA run; previous QA pass becomes stale, a second defect stops for a human, and only a human authorizes release |
 
 ## 6. User journeys
 
@@ -82,6 +95,10 @@ An owner selects one screen and confirms the complete frame after A1. The adapte
 
 An owner posts a task mention in a private channel. The keyless agent reads through the broker, posts a signed reply to the exact task and then is stopped/replaced. The operator proves that the old generation cannot start a new effect and reconciles any pending effect before successor work.
 
+### Unified Figma → QA → review pipeline
+
+The Figma agent completes its own anchored A1/A2/A3/G0 run and posts a minimal candidate receipt to the shared project handoff channel. Its scoped grant permits a `qa.review_candidate` request for that exact candidate. The QA agent accepts the request, checks a protected isolated preview against the complete design and task input, and posts a signed result with evidence. If QA finds a defect, the Figma agent may generate one revised candidate and request a fresh QA run; the old QA result cannot certify the new SHA. After a pass or a second defect, the owner decides the next product action. Internal Figma and QA group discussions stay in their own channels.
+
 ## 7. Nonfunctional requirements
 
 - Privacy: Buzz contains minimal metadata and protected artifact references; no raw credentials, customer records, model transcripts or private Figma payloads.
@@ -93,9 +110,9 @@ An owner posts a task mention in a private channel. The keyless agent reads thro
 
 ## 8. Metrics and decision gates
 
-The pilot passes when one real QA run and one real Figma screen meet FR-01–FR-08, with zero unauthorized external effects and no duplicate source publication. Record reviewed QA precision, time from source result to review, candidate review time, cost/run, blocked/input-incomplete rate and recovery time. Do not claim organization-wide productivity gain from synthetic or local-only proof.
+The initial pilot passes when one real QA run and one real Figma screen meet FR-01–FR-08, with zero unauthorized external effects and no duplicate source publication. The organization MVP passes only after FR-09–FR-12 are demonstrated by a real candidate-to-QA handoff, plus a deterministic defect/rework test. Record reviewed QA precision, time from source result to review, cross-group handoff latency, candidate review time, cost/run, blocked/input-incomplete rate and recovery time. Do not claim organization-wide productivity gain from synthetic or local-only proof.
 
-Expand to peer delegation and a job board only after the first two paths are stable, reviewer value is demonstrated, and the missing Buzz job emitter, peer authorization and durable approval semantics have separate acceptance tests.
+Expand to scoped peer delegation and a job board only after the first two paths are stable, reviewer value is demonstrated, and the missing Buzz job emitter and peer authorization have separate acceptance tests. Durable workflow approvals are required before using Buzz itself as a release gate; the organization MVP can continue to use the existing human GitHub/release gate.
 
 ## 9. Dependencies and open decisions
 

@@ -23,6 +23,9 @@ If CI is not running or the full real-user path has not been exercised, mark the
 | FR-03, FR-04 | Slice 1: one completed QA projection and input-completeness review |
 | FR-05, FR-06 | Slice 2: pinned one-screen generation and honest candidate status |
 | FR-07 | General permission gate and negative tests in every slice |
+| FR-09, FR-10 | Slices 4–5: private cross-group channel and authorized task handoff |
+| FR-11 | Slice 3: independent candidate QA with complete input |
+| FR-12 | Slice 5: bounded rework and stale-verdict rejection |
 
 ## 2. Slice 0: Rooh fork and real-relay agent proof
 
@@ -42,7 +45,7 @@ Attach the channel/task/reply event IDs, broker request ID and non-secret author
 
 ### Functional acceptance
 
-- [ ] A real eligible QA-07 card completes the existing card → receipt → Notion attempt → Slack acknowledgement path on the intended QA revision; the final watcher state and actual Notion/Slack outcomes are recorded.
+- [ ] A real eligible QA-07 card completes the existing card → receipt → successful Notion publication → Slack acknowledgement path on the intended QA revision; the final watcher state and actual Notion/Slack outcomes are recorded. The Notion-failure fallback is tested separately and labeled as such.
 - [ ] The bridge consumes a durable completed-run marker with exact card ID/version and run ID. It does not infer completion from worker output alone.
 - [ ] The Buzz item links the exact card version, original task/reference availability, report and finding categories. A reviewer can distinguish product bug, harness failure, observation and `NOT_VERIFIED`.
 - [ ] Replaying the bridge input or restarting the bridge creates one Buzz result and does not start a second browser run or cause an adapter-initiated Notion/Slack publication.
@@ -69,18 +72,50 @@ Attach protected A1/A2/A3/G0 receipts and hashes, confirmation tied to the exact
 
 ## 5. Later organization capabilities
 
-The following are separate delivery slices, not implied by the first three:
+### Slice 3: independent candidate QA
+
+- [ ] A human can request `qa.review_candidate` for one immutable Figma candidate. The QA agent receives the exact candidate SHA, isolated preview, full screen/task reference, G0 receipts and budget.
+- [ ] A real browser check of the preview produces a revision-bound `PASS`, `DEFECT`, `BLOCKED` or `INPUT_INCOMPLETE` with protected evidence. A QA-07 prepayment landing verdict is not accepted as substitute evidence.
+- [ ] A missing preview, incomplete frame/reference or changed candidate SHA blocks QA before a product pass can be reported.
+- [ ] The QA process cannot modify the candidate, publish a QA-07 report or trigger a product release.
+
+Evidence: one real candidate review, its browser artifacts and input hashes, an input-incomplete negative case, exact QA runner revision and local gate.
+
+### Slice 4: authorized cross-group handoff
+
+- [ ] One project has separate private Figma and QA group channels plus one private handoff channel with explicit membership. An agent in one group cannot read the other group's internal channel.
+- [ ] A Figma agent with a specific project/recipient/`qa.review_candidate` grant signs a request for one candidate SHA. The QA agent accepts or rejects it with a linked signed event; result refers to the same request, pipeline ID and SHA.
+- [ ] Wrong project, ungranted peer, stale candidate, expired budget and fenced generation are denied before QA browser/model execution.
+- [ ] Duplicate request delivery creates at most one QA run; cancellation/retry and relay-acknowledgement loss have an inspectable terminal or unresolved state.
+
+Evidence: signed event chain, broker grant and request IDs, recipient decision, negative tests, duplicate/cancel proof and real-relay retrieval. An owner manually forwarding the task proves the QA capability but does not complete this autonomous handoff slice.
+
+### Slice 5: one unified Figma → QA pipeline
+
+- [ ] One real confirmed Figma screen yields an exact candidate, an autonomous QA request in the handoff channel, an independent QA result and a human decision linked by one `pipeline_id`.
+- [ ] A deterministic defect fixture causes one automatic Figma repair linked to the prior candidate SHA and exact QA defect evidence, then a new QA request tied to the new SHA. The previous QA verdict is rejected as stale.
+- [ ] A second defect, blocked input, timeout, cancelled request or uncertain broker effect stops automatic work and requires the owner. The loop cannot exceed one automatic rework.
+- [ ] The full event chain is visible from Buzz without exposing either group's private channel or protected artifacts to the other group by default.
+- [ ] No product repository write, merge, deploy or payment action occurs from this pipeline.
+
+Evidence: real end-to-end run, fixture defect/rework run, event/receipt/hash chain, reviewer decision, cost and latency, negative authorization tests, exact deployed Rooh revision and rollback rehearsal.
+
+## 6. Future optional organization capabilities
+
+The following are separate delivery slices, not implied by the organization MVP:
 
 | Capability | Additional DoD before activation |
 | --- | --- |
 | Typed job board | Request publisher, authorized consumer, accepted/progress/result/cancel handling, replay/cancel tests and user-visible status agree on one job ID |
-| Agent-to-agent delegation | Explicit peer capability and source metadata, bounded depth/breadth, cycle/timeout limits and negative test for ungranted peer |
+| General agent-to-agent delegation | Additional recipient capabilities beyond `qa.review_candidate`, bounded depth/breadth, cycle/timeout limits and negative test for ungranted peer |
 | Durable approvals | Approval token and exact revision persist across restart; executor resumes once; rejection and stale-revision tests pass |
 | Product writes / PR creation | Repository-specific assignment, isolated target checkout, existing project gates, human review and reversible rollback |
 | Merge / deploy | Existing GitHub/release authority confirms exact artifact; Buzz never treats a chat message or model claim as deployment proof |
 | Voice action | Transcript/request is bound to a named human, exact capability, target revision and explicit confirmation; same permission tests as text path |
 | External A2A | Named external consumer, authentication and data-boundary review, interoperability and cancellation proof |
 
-## 6. Production Done for the Rooh pilot
+## 7. Production Done
 
-The pilot is production Done only when slices 0–2 have their release evidence, the exact Rooh-built revision is observed on the target server, broker and bridge health are monitored, costs and error rates are visible, rollback is exercised, and an owner reviews one real QA result and one real Figma candidate from Buzz. Until then use `pilot in progress` with the exact proven boundary.
+The **initial pilot** is production Done only when slices 0–2 have their release evidence, the exact Rooh-built revision is observed on the target server, broker and bridge health are monitored, costs and error rates are visible, rollback is exercised, and an owner reviews one real QA result and one real Figma candidate from Buzz.
+
+The **AI Native organization MVP** is production Done only when slices 3–5 additionally pass on the deployed Rooh revision, including one real autonomous cross-group Figma → QA handoff and a verified bounded rework path. Until then use `pilot in progress` or `organization MVP in progress` with the exact proven boundary.

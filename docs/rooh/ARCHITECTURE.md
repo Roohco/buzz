@@ -10,16 +10,20 @@ Buzz is the coordination and audit plane. Project adapters translate a small num
 
 ```mermaid
 flowchart LR
-    H[Human owner and reviewers] <--> R[Buzz private project channels]
-    R <--> B[Buzz broker host]
-    B <--> Q[QA bridge]
-    B <--> F[Figma bridge]
-    Q --> W[Existing QA-07 watcher]
-    W --> T[Trello, Notion, Slack]
-    F --> G[Existing A1/A2/A3/G0 runner]
-    G --> D[Figma and isolated candidate workspace]
-    Q --> E[Protected evidence and run ledger]
-    F --> E
+    H[Human owner and reviewers] <--> HC[Buzz project handoff channel]
+    FG[Figma group channel] <--> FA[Figma agent and bridge]
+    QG[QA group channel] <--> QA[QA agent and bridge]
+    FA <-->|scoped broker| B[Buzz broker host]
+    QA <-->|scoped broker| B
+    B <--> HC
+    FA -->|candidate SHA and QA request| HC
+    HC -->|authorized task| QA
+    QA -->|revision-bound QA result| HC
+    FA --> F[Existing A1/A2/A3/G0 runner]
+    QA --> W[Existing QA-07 watcher for source results]
+    QA --> C[New candidate-review capability]
+    FA --> E[Protected evidence and run ledger]
+    QA --> E
     H --> X[GitHub review and release gates]
 ```
 
@@ -41,6 +45,12 @@ The bridges may run near their harnesses and connect outbound to the broker/rela
 
 The broker signs an ordinary channel message. Its public event does not embed the broker task ID, generation or request ID. The first pilot therefore uses a reply to the initiating event as its signed causal link and stores the broker receipt in the protected ledger. It must not claim fully queryable public effect provenance or exactly-once effects.
 
+### Channel topology for the organization MVP
+
+Use a private Figma group channel for design/generation discussion, a private QA group channel for QA execution discussion, and a private project handoff channel containing the owner and only the agents participating in that project's pipeline. The handoff channel carries a minimal signed task/result envelope and protected artifact references, not raw design files or group-internal history. A member of either group does not automatically join the other group or gain a tool capability. For the first pipeline, provision one handoff channel explicitly; add more project channels only when a second real project needs them.
+
+Current broker-mode ACP accepts only owner messages. A human-signed handoff can prove the recipient QA capability before peer dispatch exists, but it is not an autonomous Figma-to-QA handoff. The organization MVP requires a scoped authorized-peer extension and its negative tests. See [ADR 0006](adr/0006-cross-group-handoff.md).
+
 ## 3. Logical entities and ownership
 
 | Entity | Authoritative owner | Minimum fields / rule |
@@ -51,12 +61,16 @@ The broker signs an ordinary channel message. Its public event does not embed th
 | Evidence | Protected project storage | Content hash, protected reference, type, producer, input revision; never raw secret in Buzz |
 | Decision | Human in source tool or signed Buzz message as applicable | Exact input/result being approved, approver, scope and timestamp |
 | EffectReceipt | Broker and external system | Broker request ID and effect state; external receipt if an effect occurred |
+| Pipeline | Figma adapter ledger for one delivery item | `pipeline_id`, original source version, current candidate SHA, stage attempts, latest QA result and stop reason |
+| Handoff | Signed sender and recipient in project channel | Parent event ID, recipient capability, candidate SHA, deadline/budget, acceptance/result event IDs |
 
 `BuzzTask` is a signed message containing a preallocated `run_id` in the first real-relay experiment, not a new database entity. The ledger stores a mapping from source/run to Buzz message IDs and broker receipts. A later typed job event may replace the message template only after its publisher, consumer and authorization checks exist.
 
 ### Correlation contract
 
 Every bridge record contains `source_system`, `source_id`, `source_version`, `run_id`, `agent_id`, `harness_revision`, `buzz_channel_id`, `buzz_task_event_id` where a task exists, `buzz_result_event_id` when acknowledged, `broker_request_id`, `generation`, `evidence_sha256` and `trace_id` where available. The idempotency key is `source_system + source_id + source_version + run_id + publication_kind`. Do not derive identity from a mutable title or URL.
+
+Cross-group records additionally carry `pipeline_id`, `stage_id`, `parent_event_id`, exact `candidate_sha` and `recipient_capability`. QA acceptance and result events refer to the same candidate SHA. A repair record also names `parent_candidate_sha` and the QA defect result/evidence hash that prompted it. A new candidate SHA creates a new QA task and makes the previous QA result stale for release decisions. The protected ledger and signed event chain must agree; an unrecognized or conflicting parent stops processing.
 
 The Buzz message presents a short human-readable summary, input revision, domain outcome, protected evidence reference and next decision. It is a projection of the ledger, not a second authority for QA verdicts or release status. The source/task ID may be opaque in public-facing text; private URLs and payloads stay in protected evidence storage.
 
@@ -82,6 +96,12 @@ With the same anchored input, invoke A2 source projection, A3 asset materializat
 
 The existing LangGraph API decides a next action; it does not itself execute it. The bridge must call the existing commands or the existing local executor, and must not create a competing general graph. This boundary is documented in the Figma2Code handoff at upstream `develop` `8af4a66`.
 
+### 4.4 Candidate QA capability and cross-group handoff
+
+Before enabling peer delegation, give a human owner a way to request one QA review of a real Figma candidate. This is a new bounded QA capability, not the existing QA-07 prepayment landing watcher. It accepts an immutable candidate SHA, isolated preview locator, full Figma screen/root/version, original task/reference material, G0 receipts and a time/model budget. It has read-only browser access to the preview and evidence. It returns `PASS`, `DEFECT`, `BLOCKED` or `INPUT_INCOMPLETE` with screenshots/observations and the exact candidate SHA. No release verdict follows from model text alone.
+
+After that capability passes a real review, allow the Figma agent to post a signed `qa.review_candidate` request in the shared handoff channel, addressed to the QA agent. The broker/recipient checks the sender's specific grant, channel, project, candidate SHA, budget and task generation before accepting. A typed job event may be used when its emitter/consumer/cancel path is implemented; an owner-signed message remains the fallback until then. QA posts acceptance and a signed result linked to the request. The Figma adapter may perform at most one automatic rework for `DEFECT`, using the exact prior candidate and QA evidence to produce a new SHA and new QA request. The current Figma generation contract must be audited for this repair input; if it cannot consume it safely, add one bounded repair entrypoint in that harness before enabling automation. `PASS` moves to human review; a second defect, blocked input, timeout or uncertain effect stops for the owner. No agent may promote itself to reviewer of its own candidate.
+
 ## 5. Identity and authorization
 
 Each agent has its own Buzz public identity and private channel membership. The model process receives only a scoped broker credential; the signing key stays with the broker/operator. A QA mirror identity and a Figma generator identity are separate. The human owner is explicit. Project membership and persona/team labels do not grant tool permissions.
@@ -90,6 +110,8 @@ Each agent has its own Buzz public identity and private channel membership. The 
 | --- | --- | --- |
 | QA bridge | Read completed QA receipt; post/reply in its project channel | Trigger another QA run, publish to Notion/Slack, payment mutation |
 | Figma bridge | Read owner task; call A1/A2/A3/G0 for one confirmed screen; post candidate | Product repo write, PR creation, merge, deploy |
+| Candidate QA agent | Review exact isolated preview and complete input; return revision-bound evidence | Modify candidate, publish QA-07 source reports, approve release |
+| Figma peer after grant | Request `qa.review_candidate` for its own exact candidate in one project handoff channel | Command arbitrary QA tools, read QA group channel, grant itself further roles |
 | Human owner | Request a bounded run and confirm A1 frame | Implicit approval of a different revision or later release |
 | Reviewer | Inspect evidence and record decision | Elevate agent authority by joining a channel |
 | Buzz workflow | Trigger only a separately verified noncritical action | Serve as durable approval gate until executor persistence is fixed |
@@ -99,6 +121,8 @@ The broker's current owner-only rule prohibits agent-to-agent command intake. Pe
 ## 6. States and failure handling
 
 The shared run lifecycle is `observed → accepted → running → completed | blocked | failed | cancelled`. `completed` describes execution, not business validation. Domain outcome is separate: QA `CHECKED/NOT_VERIFIED` or Figma `generated_not_release_validated/release_validated`. Review state is separately `pending/approved/rejected`, tied to an exact result revision.
+
+The pipeline lifecycle is `source_confirmed → candidate_ready → qa_requested → qa_running → qa_passed | qa_defect | qa_blocked → human_review`. A `qa_defect` permits one transition to `rework_candidate_ready` and then a fresh `qa_requested` for the new SHA. No previous QA pass can be reused after that transition. `human_review` is a decision point, not proof of product deployment.
 
 | Failure | Required behavior |
 | --- | --- |
@@ -111,6 +135,9 @@ The shared run lifecycle is `observed → accepted → running → completed | b
 | QA evidence missing essential task context | Mark input incomplete; no product failure verdict |
 | Budget/timeout reached | Stop tool execution, retain partial evidence, report blocked/failed honestly |
 | Reviewer rejects candidate | Preserve history; do not mutate source task or relabel the old result |
+| Handoff arrives from ungranted peer or wrong project | Reject before QA browser/model execution; retain signed denial evidence |
+| QA result names a different candidate SHA | Mark conflicting/stale and stop; never attach it to the current candidate |
+| QA returns a second defect | Stop automatic loop and request human direction |
 
 The first pilot does not promise exactly-once effects. It promises no *adapter-caused* duplicate execution, durable reconciliation state and explicit operator intervention when the broker cannot prove an outcome.
 
@@ -120,7 +147,8 @@ The first pilot does not promise exactly-once effects. It promises no *adapter-c
 2. On an isolated relay/canary, prove broker issue → signed post/reply → relay read → quiesce/drain/fence. Record exact image digest and test run. Do not reuse a synthetic empty-relay proof as production evidence.
 3. Add QA bridge in observation mode, then publish one real completed run to a private channel. Compare Buzz projection with the source task, Notion report and Slack acknowledgement.
 4. Add one Figma screen run after full-frame approval. Verify candidate artifacts and absence of product writes.
-5. Only after DoD passes, enable repeated runs with bounded concurrency/cost. Typed jobs, peer delegation, voice effects and automatic release actions each require their own slice.
+5. Add a human-requested candidate QA review, then a scoped peer handoff, then one real end-to-end Figma → QA pipeline with a deterministic rework fixture. Promote repeated autonomous runs only after its DoD passes.
+6. Typed jobs, voice effects, durable approvals and automatic release actions each retain separate gates. The [technical roadmap](ROADMAP.md) defines the dependency order.
 
 Rollback disables bridge publication or command intake and fences its broker generation. QA-07 and Figma2Code continue independently. Keep already published signed history; post a correction linked to the original result instead of deleting or silently rewriting it.
 

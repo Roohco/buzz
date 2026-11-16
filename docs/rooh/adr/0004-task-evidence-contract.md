@@ -14,6 +14,8 @@ For the first slice, use a signed owner task message and signed agent reply to t
 
 Separate lifecycle state (`running/completed/blocked/failed`), domain outcome (`CHECKED/NOT_VERIFIED/generated_not_release_validated`) and review state (`pending/approved/rejected`). Never translate a generated candidate or missing QA input into a release/product pass. A correction is a new linked event; preserve the original signed history.
 
+For cross-group work, add `pipeline_id`, parent task event ID, recipient capability, exact candidate SHA and stage attempt. QA acceptance/result must cite the candidate SHA. A revision changes the SHA and requires a new QA task; previous QA proof cannot be reused. See [ADR 0006](0006-cross-group-handoff.md).
+
 ## Consequences
 
 - One source revision and run are inspectable from Buzz without copying protected evidence into chat.

@@ -10,7 +10,7 @@ The goal spans interactive agent sessions, tool access, cross-project work and e
 
 Use existing Buzz signed channel messages and broker read/post/reply for the real-relay proof and first project result projections. Keep ACP for interactive owner-agent sessions and MCP for individually authorized tool calls. Use the existing Figma2Code/Strands graph inside that harness. Add Buzz typed jobs only after publisher, consumer, cancel, replay and permission contracts are verified. Add A2A only for a named external agent service; do not create a parallel internal job bus for two Rooh adapters.
 
-Roll out in order: real-relay broker proof → QA completion projection → one-screen Figma candidate → typed jobs and authorized peer delegation → durable approvals and guarded Git effects → voice interface over the same grants. Each stage has a separate [DoD](../DOD.md). Voice is an input mode, never an authority source.
+Roll out in order: real-relay broker proof → QA completion projection → one-screen Figma candidate → independently tested candidate QA capability → typed, scoped Figma-to-QA handoff → one bounded cross-group pipeline → optional durable approvals and guarded Git effects → voice interface over the same grants. Each stage has a separate [DoD](../DOD.md). Voice is an input mode, never an authority source.
 
 ## Consequences
 
