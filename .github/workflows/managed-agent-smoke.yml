@@ -29,8 +29,71 @@ jobs:
         with:
           key: managed-agent-smoke
       - name: Build broker image
-        run: docker build -f Dockerfile.broker-host -t buzz-broker-host:smoke .
+        run: docker build --build-arg VCS_REF="$GITHUB_SHA" -f Dockerfile.broker-host -t buzz-broker-host:smoke .
+      - name: Verify broker image revision
+        run: |
+          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' buzz-broker-host:smoke)
+          test "$revision" = "$GITHUB_SHA"
       - name: Pull keyless ACP image
         run: docker pull ghcr.io/malkovitc/buzz-sprig@sha256:9f350ff80feeaf0ebfbccc603b18e6b75871ff54482c26c6ba9351ff9981c5ab
       - name: Synthetic authority and Compose handoff
         run: python3 deploy/managed-agent/test-runtime.py
+
+  publish:
+    name: Publish Rooh broker canary
+    needs: smoke
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'Roohco/buzz' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Verify checked-out commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push broker image
+        id: image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile.broker-host
+          push: true
+          tags: ghcr.io/roohco/buzz-broker-host:sha-${{ github.sha }}
+          build-args: VCS_REF=${{ github.sha }}
+      - name: Verify registry digest
+        env:
+          IMAGE: ghcr.io/roohco/buzz-broker-host
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          tag_digest=$(docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA" --format '{{json .Manifest}}' | jq -r '.digest')
+          test "$tag_digest" = "$DIGEST"
+          docker pull "$IMAGE@$DIGEST"
+          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE@$DIGEST")
+          test "$revision" = "$GITHUB_SHA"
+          printf 'Broker canary: %s@%s\nSource commit: %s\n' "$IMAGE" "$DIGEST" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest broker image provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ghcr.io/roohco/buzz-broker-host
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true

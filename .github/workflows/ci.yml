@@ -71,6 +71,7 @@ jobs:
               - 'justfile'
             broker_host:
               - 'crates/buzz-broker-host/**'
+              - 'Dockerfile.broker-host'
               - '.github/workflows/ci.yml'
             managed_agent_launcher:
               - 'Dockerfile.broker-host'
