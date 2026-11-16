@@ -18,10 +18,14 @@
 //! Run: `RELAY_URL=ws://localhost:3000 cargo test -p buzz-broker-host --test
 //! real_relay_e2e r1_broker_authority_against_real_relay -- --ignored --exact`.
 //! The ACP liveness test also needs `BUZZ_E2E_ACP_BIN` and `BUZZ_E2E_CLI_BIN`.
+//! `BUZZ_E2E_BROKER_HOST_BIN` runs an exact published broker binary instead of
+//! the Cargo-built one; the rollback rehearsal also needs
+//! `BUZZ_E2E_ROLLBACK_BROKER_HOST_BIN`.
 
 #![cfg(unix)]
 
 mod acp_liveness;
+mod rollback;
 mod support;
 
 use std::path::Path;

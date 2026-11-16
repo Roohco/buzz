@@ -8,10 +8,13 @@
 #
 # Usage:
 #   ./scripts/start-relay-for-tests.sh [--profile <cargo-profile>] [--no-build]
+#                                      [--image <relay-image@sha256:...>]
 #
 # Options:
 #   --profile <profile>   Cargo build profile (default: ci)
 #   --no-build            Use existing target/<profile>/ binaries (CI artifact reuse)
+#   --image <ref>         Run this published relay image (host network) instead
+#                         of a local build; its logs go to /tmp/buzz-relay.log
 #
 # Exports:
 #   RELAY_URL=ws://localhost:3000
@@ -25,6 +28,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CARGO_PROFILE="${CARGO_PROFILE:-ci}"
 SKIP_BUILD=false
+RELAY_IMAGE=""
+RELAY_CONTAINER=buzz-relay-under-test
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -37,6 +42,10 @@ while [[ $# -gt 0 ]]; do
     --no-build)
       SKIP_BUILD=true
       shift
+      ;;
+    --image)
+      RELAY_IMAGE="$2"
+      shift 2
       ;;
     *)
       echo "Unknown option: $1" >&2
@@ -134,7 +143,9 @@ ok "Community seeded"
 
 # ── Build relay ──────────────────────────────────────────────────────────────
 
-if [[ "${SKIP_BUILD}" == "true" ]]; then
+if [[ -n "${RELAY_IMAGE}" ]]; then
+  log "Using published relay image ${RELAY_IMAGE}; skipping relay build"
+elif [[ "${SKIP_BUILD}" == "true" ]]; then
   for bin in buzz-relay git-credential-nostr; do
     if [[ ! -x "./target/${CARGO_PROFILE}/${bin}" ]]; then
       err "--no-build: ./target/${CARGO_PROFILE}/${bin} missing or not executable"
@@ -165,23 +176,46 @@ if [[ "${BUZZ_REQUIRE_RELAY_MEMBERSHIP:-}" == "true" ]]; then
   log "Membership gating enabled (NIP-43)"
 fi
 
-nohup env \
-  DATABASE_URL=postgres://buzz:buzz_dev@localhost:5432/buzz \
-  REDIS_URL=redis://localhost:6379 \
-  RELAY_URL=ws://localhost:3000 \
-  BUZZ_BIND_ADDR=0.0.0.0:3000 \
-  BUZZ_REQUIRE_AUTH_TOKEN=false \
-  BUZZ_RECONCILE_CHANNELS=true \
-  BUZZ_GIT_PROBE_WRITERS=8 \
-  ${MEMBERSHIP_ENV[@]+"${MEMBERSHIP_ENV[@]}"} \
-  "./target/${CARGO_PROFILE}/buzz-relay" > /tmp/buzz-relay.log 2>&1 &
-echo $! > /tmp/buzz-relay.pid
+RELAY_ENV=(
+  DATABASE_URL=postgres://buzz:buzz_dev@localhost:5432/buzz
+  REDIS_URL=redis://localhost:6379
+  RELAY_URL=ws://localhost:3000
+  BUZZ_BIND_ADDR=0.0.0.0:3000
+  BUZZ_REQUIRE_AUTH_TOKEN=false
+  BUZZ_RECONCILE_CHANNELS=true
+  BUZZ_GIT_PROBE_WRITERS=8
+  ${MEMBERSHIP_ENV[@]+"${MEMBERSHIP_ENV[@]}"}
+)
+
+if [[ -n "${RELAY_IMAGE}" ]]; then
+  docker rm -f "${RELAY_CONTAINER}" >/dev/null 2>&1 || true
+  RELAY_ENV_ARGS=()
+  for entry in "${RELAY_ENV[@]}"; do
+    RELAY_ENV_ARGS+=(-e "${entry}")
+  done
+  docker run -d --name "${RELAY_CONTAINER}" --network host \
+    "${RELAY_ENV_ARGS[@]}" "${RELAY_IMAGE}" >/dev/null
+  # Stream container logs to the same file CI uploads on failure.
+  nohup docker logs -f "${RELAY_CONTAINER}" > /tmp/buzz-relay.log 2>&1 &
+else
+  nohup env "${RELAY_ENV[@]}" \
+    "./target/${CARGO_PROFILE}/buzz-relay" > /tmp/buzz-relay.log 2>&1 &
+  echo $! > /tmp/buzz-relay.pid
+fi
+
+relay_alive() {
+  if [[ -n "${RELAY_IMAGE}" ]]; then
+    [[ "$(docker inspect --format '{{.State.Running}}' "${RELAY_CONTAINER}" 2>/dev/null)" == "true" ]]
+  else
+    kill -0 "$(cat /tmp/buzz-relay.pid)" 2>/dev/null
+  fi
+}
 
 # ── Poll readiness ───────────────────────────────────────────────────────────
 
 log "Waiting for relay readiness..."
 for attempt in $(seq 1 60); do
-  if ! kill -0 "$(cat /tmp/buzz-relay.pid)" 2>/dev/null; then
+  if ! relay_alive; then
     err "Relay process died"
     cat /tmp/buzz-relay.log
     exit 1

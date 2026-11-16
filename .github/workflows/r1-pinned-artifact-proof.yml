@@ -1,0 +1,188 @@
+name: R1 Pinned Artifact Proof
+
+# R1 release gate: run the real-relay broker proof against exact published
+# images, selected by digest, then rehearse a broker rollback on the same
+# authority state. Dispatch-only, from main. Images are pulled with the
+# job's short-lived GITHUB_TOKEN; binaries are copied out of those images, the
+# relay runs as its published container, and the tests come from this commit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      broker_digest:
+        description: Current Rooh broker canary digest (ghcr.io/roohco/buzz-broker-host@sha256:...)
+        required: true
+        type: string
+      relay_digest:
+        description: Rooh relay manifest digest (ghcr.io/roohco/buzz@sha256:...)
+        required: true
+        type: string
+      sprig_digest:
+        description: Rooh Sprig manifest digest with buzz-acp and buzz (ghcr.io/roohco/buzz-sprig@sha256:...)
+        required: true
+        type: string
+      rollback_broker_digest:
+        description: Previous broker canary digest to roll back to; empty rehearses a restart of the current digest
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: r1-pinned-artifact-proof
+  cancel-in-progress: false
+
+jobs:
+  proof:
+    name: Pinned real-relay proof and rollback
+    if: github.repository == 'Roohco/buzz' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    env:
+      BROKER_IMAGE: ghcr.io/roohco/buzz-broker-host@${{ inputs.broker_digest }}
+      ROLLBACK_IMAGE: ghcr.io/roohco/buzz-broker-host@${{ inputs.rollback_broker_digest || inputs.broker_digest }}
+      RELAY_IMAGE: ghcr.io/roohco/buzz@${{ inputs.relay_digest }}
+      SPRIG_IMAGE: ghcr.io/roohco/buzz-sprig@${{ inputs.sprig_digest }}
+      EVIDENCE_DIR: /tmp/r1-evidence
+      PINNED_BIN: /tmp/r1-pinned-bin
+    steps:
+      - name: Checkout exact main source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify commit and digest inputs
+        env:
+          DIGESTS: ${{ inputs.broker_digest }} ${{ inputs.relay_digest }} ${{ inputs.sprig_digest }} ${{ inputs.rollback_broker_digest }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          for digest in $DIGESTS; do
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest: $digest" >&2; exit 1; }
+          done
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          key: r1-pinned-artifact-proof
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull, verify and unpack exact images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR" "$PINNED_BIN/current" "$PINNED_BIN/rollback" "$PINNED_BIN/sprig"
+          entries=()
+          for pair in broker:BROKER_IMAGE rollback_broker:ROLLBACK_IMAGE relay:RELAY_IMAGE sprig:SPRIG_IMAGE; do
+            role=${pair%%:*}
+            image_var=${pair#*:}
+            image=${!image_var}
+            docker pull --quiet "$image"
+            revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "$role: missing OCI revision" >&2; exit 1; }
+            # Published from main history: the revision is an ancestor of this commit.
+            git merge-base --is-ancestor "$revision" HEAD
+            if gh attestation verify "oci://$image" --repo "$GITHUB_REPOSITORY" >/dev/null 2>"$RUNNER_TEMP/attest-$role.err"; then
+              attestation=verified
+            else
+              attestation=unverified
+              sed 's/^/  /' "$RUNNER_TEMP/attest-$role.err" >&2
+            fi
+            entries+=("$(jq -nc --arg role "$role" --arg image "$image" --arg revision "$revision" \
+              --arg attestation "$attestation" \
+              '{role:$role, image:$image, revision:$revision, provenance_attestation:$attestation}')")
+            printf '| %s | `%s` | `%s` | %s |\n' "$role" "$image" "$revision" "$attestation" >> "$RUNNER_TEMP/summary-rows.md"
+          done
+          # The relay image must match the schema this commit applies.
+          relay_revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$RELAY_IMAGE")
+          git diff --quiet "$relay_revision" HEAD -- schema/ scripts/attach-schema-partitions.sql
+
+          unpack() { # image, path in image, destination
+            local id
+            id=$(docker create "$1")
+            docker cp "$id:$2" "$3"
+            docker rm "$id" >/dev/null
+          }
+          unpack "$BROKER_IMAGE" /usr/local/bin/buzz-broker-host "$PINNED_BIN/current/buzz-broker-host"
+          unpack "$ROLLBACK_IMAGE" /usr/local/bin/buzz-broker-host "$PINNED_BIN/rollback/buzz-broker-host"
+          unpack "$SPRIG_IMAGE" /usr/local/bin/sprig "$PINNED_BIN/sprig/sprig"
+          ln -s sprig "$PINNED_BIN/sprig/buzz-acp"
+          ln -s sprig "$PINNED_BIN/sprig/buzz"
+          file -L "$PINNED_BIN"/*/*
+          binaries=$(cd "$PINNED_BIN" && sha256sum current/buzz-broker-host rollback/buzz-broker-host sprig/sprig \
+            | jq -Rnc '[inputs | capture("^(?<sha256>[0-9a-f]+)  (?<path>.+)$")]')
+          printf '%s\n' "${entries[@]}" | jq -s \
+            --arg source "$GITHUB_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --argjson binaries "$binaries" \
+            '{test_source_revision:$source, run_url:$run, images:., binaries:$binaries}' \
+            > "$EVIDENCE_DIR/r1-pinned-artifacts.json"
+          cat "$EVIDENCE_DIR/r1-pinned-artifacts.json"
+      - name: Start pinned relay image
+        run: ./scripts/start-relay-for-tests.sh --image "$RELAY_IMAGE"
+      - name: Map the canonical loopback community host
+        run: |
+          docker exec -e PGPASSWORD=buzz_dev buzz-postgres psql -U buzz -d buzz -v ON_ERROR_STOP=1 -qtA -c \
+            "INSERT INTO communities (id, host) VALUES ('00000000-0000-4000-8000-0000000c0de1', '127.0.0.1:3000') ON CONFLICT (lower(host)) DO NOTHING;"
+      - name: Broker real-relay proof (pinned broker)
+        run: cargo test -p buzz-broker-host --test real_relay_e2e r1_broker_authority_against_real_relay -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
+          BUZZ_E2E_BROKER_HOST_BIN: ${{ env.PINNED_BIN }}/current/buzz-broker-host
+          R1_EVIDENCE_OUT: ${{ env.EVIDENCE_DIR }}/r1-broker-real-relay.json
+      - name: Managed ACP liveness proof (pinned broker and Sprig)
+        run: cargo test -p buzz-broker-host --test real_relay_e2e acp_liveness::r1_keyless_acp_stays_live_against_real_relay -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
+          BUZZ_E2E_BROKER_HOST_BIN: ${{ env.PINNED_BIN }}/current/buzz-broker-host
+          BUZZ_E2E_ACP_BIN: ${{ env.PINNED_BIN }}/sprig/buzz-acp
+          BUZZ_E2E_CLI_BIN: ${{ env.PINNED_BIN }}/sprig/buzz
+          R1_ACP_EVIDENCE_OUT: ${{ env.EVIDENCE_DIR }}/r1-acp-liveness.json
+      - name: Rollback rehearsal (current to rollback broker)
+        run: cargo test -p buzz-broker-host --test real_relay_e2e rollback::r1_broker_rollback_keeps_fenced_generation_dead -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
+          BUZZ_E2E_BROKER_HOST_BIN: ${{ env.PINNED_BIN }}/current/buzz-broker-host
+          BUZZ_E2E_ROLLBACK_BROKER_HOST_BIN: ${{ env.PINNED_BIN }}/rollback/buzz-broker-host
+          R1_ROLLBACK_EVIDENCE_OUT: ${{ env.EVIDENCE_DIR }}/r1-broker-rollback.json
+      - name: Bind evidence to the pinned artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          manifest="$EVIDENCE_DIR/r1-pinned-artifacts.json"
+          test -f "$manifest" || exit 0
+          for evidence in "$EVIDENCE_DIR"/r1-broker-real-relay.json "$EVIDENCE_DIR"/r1-acp-liveness.json "$EVIDENCE_DIR"/r1-broker-rollback.json; do
+            [ -f "$evidence" ] || continue
+            jq --slurpfile artifacts "$manifest" '. + {pinned_artifacts: $artifacts[0]}' "$evidence" > "$evidence.tmp"
+            mv "$evidence.tmp" "$evidence"
+          done
+          {
+            echo '### R1 pinned artifacts'
+            echo
+            echo '| Role | Image | OCI revision | Provenance |'
+            echo '| --- | --- | --- | --- |'
+            cat "$RUNNER_TEMP/summary-rows.md"
+            echo
+            echo "Evidence files: $(find "$EVIDENCE_DIR" -maxdepth 1 -type f -printf '%f ')"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload R1 pinned evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: r1-pinned-artifact-evidence
+          path: ${{ env.EVIDENCE_DIR }}/
+          if-no-files-found: ignore
+      - name: Upload relay log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: r1-pinned-relay-log
+          path: /tmp/buzz-relay.log
+          if-no-files-found: ignore

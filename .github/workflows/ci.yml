@@ -259,6 +259,14 @@ jobs:
           BUZZ_E2E_ACP_BIN: ${{ github.workspace }}/target/debug/buzz-acp
           BUZZ_E2E_CLI_BIN: ${{ github.workspace }}/target/debug/buzz
           R1_ACP_EVIDENCE_OUT: ${{ runner.temp }}/r1-evidence/r1-acp-liveness.json
+      - name: Broker restart rehearsal
+        # Same source binary on both sides; r1-pinned-artifact-proof.yml runs
+        # this against two published broker digests.
+        run: cargo test -p buzz-broker-host --test real_relay_e2e rollback::r1_broker_rollback_keeps_fenced_generation_dead -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
+          BUZZ_E2E_ROLLBACK_BROKER_HOST_BIN: ${{ github.workspace }}/target/debug/buzz-broker-host
+          R1_ROLLBACK_EVIDENCE_OUT: ${{ runner.temp }}/r1-evidence/r1-broker-rollback.json
       - name: Upload R1 evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
