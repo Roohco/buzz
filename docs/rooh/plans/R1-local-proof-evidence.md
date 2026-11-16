@@ -73,4 +73,7 @@ Local follow-up verification: the new ACP regression failed before the code
 change (`poller should remain open`) and passed after it. The full `buzz-acp`
 unit suite passed 858/858, `buzz-broker-client` passed 13/13, and Clippy for
 both affected crates passed with warnings denied. The repository-wide `just ci`
-gate and an exact-image live rerun remain outstanding.
+gate then exited 0 on branch `feat/rooh-r1-real-relay` at `4a977b2a` after its
+Rust, desktop, Tauri, web and mobile checks; mobile reported 1,835 passing
+tests. The exact-image live rerun, redacted action-code timeline and
+independent signature verification remain outstanding, so R1 is still open.
