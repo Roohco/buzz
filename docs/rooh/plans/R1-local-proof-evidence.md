@@ -53,7 +53,13 @@ verification artifact.
    reply. The log reported `managed ACP authority was rejected by the host`;
    a later direct `authority.status` probe for that generation returned
    `active` and the expected identity. This occurred before the deliberate
-   relay outage and quiesce. Do not treat long-running ACP health as proven.
+   relay outage and quiesce. A deterministic regression test subsequently
+   proved that one broker `channel.read` `action_failed` verdict also made the
+   poller exit while authority stayed active. The local fix retries that one
+   class of read failure and retains fail-closed behavior for `unauthorized`.
+   This test does not prove which broker verdict caused the original live exit;
+   repeat the live run with a redacted action-code timeline before treating
+   long-running ACP health as proven.
 3. Independently verify signed event signatures and preserve a redacted
    machine-readable proof on the exact pinned run. Record ACP and broker
    request IDs for the production-shaped evidence bundle.
@@ -62,3 +68,9 @@ verification artifact.
 
 All private keys, auth tags, bearers and the disposable relay key were kept
 only in owner-readable temporary files and are excluded from this document.
+
+Local follow-up verification: the new ACP regression failed before the code
+change (`poller should remain open`) and passed after it. The full `buzz-acp`
+unit suite passed 858/858, `buzz-broker-client` passed 13/13, and Clippy for
+both affected crates passed with warnings denied. The repository-wide `just ci`
+gate and an exact-image live rerun remain outstanding.

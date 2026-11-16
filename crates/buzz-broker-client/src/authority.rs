@@ -8,7 +8,8 @@
 use crate::HttpBrokerClient;
 use buzz_sdk::broker::{
     ActionArgs, ActionOutcome, AuthorityIdentity, AuthorityState, AuthorityStatusArgs,
-    BrokerClientExt, BrokerRequest, BrokerResult, ManagedAcpAuthority, RuntimeSupport,
+    BrokerClientExt, BrokerErrorCode, BrokerRequest, BrokerResult, ManagedAcpAuthority,
+    RuntimeSupport,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -37,6 +38,9 @@ pub enum AuthorityError {
     /// The host returned a verdict other than success.
     #[error("managed ACP authority was rejected by the host")]
     Rejected,
+    /// The host admitted the action but its downstream domain operation failed.
+    #[error("managed ACP broker action failed")]
+    ActionFailed,
     /// A success carried a different action outcome.
     #[error("managed ACP authority host returned the wrong outcome")]
     WrongOutcome,
@@ -131,6 +135,9 @@ impl AuthorityFence {
             .map_err(|_| AuthorityError::HostUnavailable)?;
         match response.into_envelope().result {
             BrokerResult::Succeeded { outcome } => Ok(outcome),
+            BrokerResult::Failed { error } if error.code == BrokerErrorCode::ActionFailed => {
+                Err(AuthorityError::ActionFailed)
+            }
             BrokerResult::Failed { .. } | BrokerResult::Indeterminate { .. } => {
                 Err(AuthorityError::Rejected)
             }
