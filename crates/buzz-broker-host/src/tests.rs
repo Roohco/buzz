@@ -22,6 +22,7 @@ mod acp_runtime;
 mod drain;
 mod effects;
 mod lifecycle;
+mod peer;
 mod read;
 mod receipts;
 mod reply;

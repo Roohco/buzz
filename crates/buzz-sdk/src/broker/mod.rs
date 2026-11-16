@@ -84,6 +84,10 @@ mod correlate;
 mod wire;
 
 use actions::absent_or_valued;
+pub use actions::job::{
+    JobAdmission, JobAdmitArgs, JobCancelArgs, JobDecision, JobHandoff, JobRequestArgs,
+    JobResultArgs, JobTicket, JobVerdict, CAPABILITY_QA_REVIEW_CANDIDATE,
+};
 pub use actions::{
     Action, ActionArgs, ActionOutcome, AgentTarget, AgentsCreateArgs, AgentsCreateOutcome,
     AgentsDeleteArgs, AgentsDeleteOutcome, AgentsUpdateArgs, AgentsUpdateOutcome,

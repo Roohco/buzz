@@ -160,6 +160,46 @@ impl HostSigner {
             .sign_with_keys(&self.keys)
             .map_err(|_| SigningError::Sign)
     }
+
+    /// Sign one agent job handoff event (43001/43002/43004/43005/43006).
+    ///
+    /// The channel and addressee are always the single `h` and `p` tags; the
+    /// caller supplies only the job's own named tags, never raw tag arrays
+    /// that could add another channel or addressee.
+    pub(crate) fn sign_job_event(
+        &self,
+        identity: &AuthorityIdentity,
+        kind: u16,
+        content: &str,
+        channel_id: &str,
+        addressee: &str,
+        job_tags: &[(&str, String)],
+    ) -> Result<Event, SigningError> {
+        if !self.matches_executor(identity) {
+            return Err(SigningError::ExecutorMismatch);
+        }
+        if !matches!(kind, 43001 | 43002 | 43004 | 43005 | 43006)
+            || job_tags
+                .iter()
+                .any(|(name, _)| matches!(*name, "h" | "p" | "e" | "auth"))
+        {
+            return Err(SigningError::InvalidMessage);
+        }
+        let mut tags = vec![
+            Tag::parse(["h", channel_id]).map_err(|_| SigningError::InvalidMessage)?,
+            Tag::parse(["p", addressee]).map_err(|_| SigningError::InvalidMessage)?,
+        ];
+        for (name, value) in job_tags {
+            tags.push(
+                Tag::parse([*name, value.as_str()]).map_err(|_| SigningError::InvalidMessage)?,
+            );
+        }
+        tags.push(self.auth_tag.clone());
+        EventBuilder::new(Kind::Custom(kind), content)
+            .tags(tags)
+            .sign_with_keys(&self.keys)
+            .map_err(|_| SigningError::Sign)
+    }
 }
 
 fn require_private_file(path: &Path) -> Result<(), SigningError> {

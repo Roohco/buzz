@@ -141,7 +141,41 @@ fn action_fixtures() -> Vec<ActionArgs> {
         ActionArgs::AgentsDelete(AgentsDeleteArgs {
             target: AgentTarget::Name("Research helper".into()),
         }),
+        ActionArgs::JobRequest(JobRequestArgs {
+            channel_id: CHANNEL.into(),
+            recipient_pubkey: pubkey(),
+            handoff: handoff(),
+        }),
+        ActionArgs::JobAdmit(JobAdmitArgs {
+            channel_id: CHANNEL.into(),
+            request_event_id: Some(EVENT.into()),
+        }),
+        ActionArgs::JobResult(JobResultArgs {
+            request_event_id: EVENT.into(),
+            verdict: JobVerdict::Pass,
+            summary: "fixture review passed".into(),
+            evidence_sha256: Some(EVENT.into()),
+        }),
+        ActionArgs::JobCancel(JobCancelArgs {
+            request_event_id: EVENT.into(),
+            reason: "superseded".into(),
+        }),
     ]
+}
+
+fn handoff() -> JobHandoff {
+    JobHandoff {
+        capability: CAPABILITY_QA_REVIEW_CANDIDATE.into(),
+        pipeline_id: "pipeline-1".into(),
+        stage_id: "qa-1".into(),
+        parent_event_id: EVENT.into(),
+        candidate_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+        preview_bundle_digest: format!("sha256:{EVENT}"),
+        budget_seconds: 600,
+        deadline: 1_900_000_000,
+        attempt: 1,
+        idempotency_key: "pipeline-1:qa-1:1".into(),
+    }
 }
 
 /// One outcome per action, matching the fixture order above.
@@ -191,6 +225,33 @@ fn outcome_fixtures(keys: &Keys) -> Vec<ActionOutcome> {
         ActionOutcome::AgentsDelete(AgentsDeleteOutcome {
             agent_pubkey: pubkey(),
             display_name: "Research helper".into(),
+        }),
+        ActionOutcome::JobRequest(EventPublished {
+            event_id: EVENT.into(),
+            kind: 43001,
+            created_at: 1_764_000_003,
+        }),
+        ActionOutcome::JobAdmit(Box::new(JobAdmission {
+            decision: JobDecision::Accepted,
+            request_event_id: Some(EVENT.into()),
+            decision_event_id: Some(EVENT.into()),
+            reason: None,
+            ticket: Some(JobTicket {
+                request_event_id: EVENT.into(),
+                sender_pubkey: pubkey(),
+                channel_id: CHANNEL.into(),
+                handoff: handoff(),
+            }),
+        })),
+        ActionOutcome::JobResult(EventPublished {
+            event_id: EVENT.into(),
+            kind: 43004,
+            created_at: 1_764_000_003,
+        }),
+        ActionOutcome::JobCancel(EventPublished {
+            event_id: EVENT.into(),
+            kind: 43005,
+            created_at: 1_764_000_003,
         }),
     ]
 }
@@ -1079,6 +1140,16 @@ fn every_payload_has_an_exact_and_secret_free_wire_schema() {
             ],
         ),
         ("agents.delete/args", vec!["target"]),
+        (
+            "job.request/args",
+            vec!["channelId", "handoff", "recipientPubkey"],
+        ),
+        ("job.admit/args", vec!["channelId", "requestEventId"]),
+        (
+            "job.result/args",
+            vec!["evidenceSha256", "requestEventId", "summary", "verdict"],
+        ),
+        ("job.cancel/args", vec!["reason", "requestEventId"]),
         // Outcomes.
         ("authority.status/outcome", vec!["identity", "state"]),
         ("channel.read/outcome", vec!["messages", "nextCursor"]),
@@ -1111,6 +1182,13 @@ fn every_payload_has_an_exact_and_secret_free_wire_schema() {
             vec!["agentPubkey", "displayName", "updatedFields"],
         ),
         ("agents.delete/outcome", vec!["agentPubkey", "displayName"]),
+        ("job.request/outcome", vec!["createdAt", "eventId", "kind"]),
+        (
+            "job.admit/outcome",
+            vec!["decision", "decisionEventId", "requestEventId", "ticket"],
+        ),
+        ("job.result/outcome", vec!["createdAt", "eventId", "kind"]),
+        ("job.cancel/outcome", vec!["createdAt", "eventId", "kind"]),
         (
             "authority.status/identity",
             vec![

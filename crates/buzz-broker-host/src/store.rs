@@ -25,9 +25,11 @@ mod drain;
 #[cfg(unix)]
 mod effect_lock;
 mod lifecycle;
+#[cfg(unix)]
+pub(crate) mod peer;
 
 #[cfg(unix)]
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 #[cfg(unix)]
 const EFFECTS_TABLE_SQL: &str = "CREATE TABLE broker_effects (
     credential_hash BLOB NOT NULL,
@@ -128,6 +130,7 @@ impl AuthorityStore {
                 3 => self.migrate_schema_v4().await?,
                 4 => self.migrate_schema_v5().await?,
                 5 => self.migrate_schema_v6().await?,
+                6 => self.migrate_schema_v7().await?,
                 SCHEMA_VERSION => break,
                 _ => return Err(StoreError::UnsupportedSchema),
             }

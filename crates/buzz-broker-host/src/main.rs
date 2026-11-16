@@ -4,6 +4,8 @@ mod drain;
 mod http;
 mod issuer;
 #[cfg(unix)]
+mod peer;
+#[cfg(unix)]
 mod publisher;
 #[cfg(unix)]
 mod signing;
@@ -61,6 +63,20 @@ enum Command {
         #[arg(long)]
         auth_tag_file: PathBuf,
     },
+    /// Grant one sender generation one capability on one recipient in one channel.
+    GrantIssue {
+        /// JSON file: grantId, sender (exact AuthorityIdentity), recipientPubkey,
+        /// channelId, capability.
+        #[arg(long)]
+        grant_file: PathBuf,
+    },
+    /// Revoke one peer grant; new requests under it are denied.
+    GrantRevoke {
+        #[arg(long)]
+        grant_id: String,
+    },
+    /// Print peer grants and recipient job decisions as JSON lines.
+    PeerStatus,
     /// Serve the broker action endpoint on loopback.
     Serve {
         #[arg(long, default_value = "127.0.0.1:8787")]
@@ -123,6 +139,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = (authority_file, signing_key_file, auth_tag_file);
                 return Err("effect drain is unsupported on this platform".into());
             }
+        }
+        Command::GrantIssue { grant_file } => {
+            #[cfg(unix)]
+            {
+                let grant = issuer::read_grant(&grant_file)?;
+                store.issue_peer_grant(&grant).await?;
+                println!("granted");
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = grant_file;
+                return Err("peer grants are unsupported on this platform".into());
+            }
+        }
+        Command::GrantRevoke { grant_id } => {
+            #[cfg(unix)]
+            {
+                store.revoke_peer_grant(&grant_id).await?;
+                println!("revoked");
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = grant_id;
+                return Err("peer grants are unsupported on this platform".into());
+            }
+        }
+        Command::PeerStatus => {
+            #[cfg(unix)]
+            for line in store.peer_status().await? {
+                println!("{line}");
+            }
+            #[cfg(not(unix))]
+            return Err("peer grants are unsupported on this platform".into());
         }
         Command::Serve {
             bind,
