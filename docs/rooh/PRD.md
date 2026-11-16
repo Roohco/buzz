@@ -76,9 +76,9 @@ The cross-group extension is a separate estimate: candidate QA capability **M / 
 | FR-06 | Figma candidate is labeled honestly | G0 generation-only exit 2 records `generated_not_release_validated`, with browser, visual and release checks `not_run` |
 | FR-07 | Significant effects require the right authority | Buzz membership alone cannot trigger payment, product write, merge, deploy or access grant |
 | FR-08 | Operator can see and recover a stopped run | Generation fence prevents an old body from starting new broker effects; unresolved effects are surfaced for reconciliation |
-| FR-09 | Work crosses Figma and QA groups without exposing internal group channels | A project handoff channel shows one pipeline ID, exact parent/child task links, candidate SHA and protected evidence references |
-| FR-10 | Figma agent can request a bounded QA review | QA agent accepts/rejects a signed `qa.review_candidate` task; a non-granted peer or wrong candidate is denied before browser work |
-| FR-11 | QA independently checks the actual candidate | QA result is based on an isolated preview plus complete design/task context and is tied to the candidate SHA; QA-07's landing verdict is not substituted |
+| FR-09 | Work crosses Figma and QA groups without exposing internal group channels | A project handoff channel shows one pipeline ID, exact parent/child task links, candidate SHA, preview bundle digest and protected evidence references |
+| FR-10 | Figma agent can request a bounded QA review | QA agent accepts/rejects a signed `qa.review_candidate` task for that exact candidate and bundle; a non-granted peer or wrong identity is denied before browser work |
+| FR-11 | QA independently checks the actual candidate | QA verifies that the browser-served bundle matches the pinned candidate/build manifest, runs generated code without access to credentials, protected references, host services or arbitrary egress, and reviews against complete design/task context; QA-07's landing verdict is not substituted |
 | FR-12 | Defect feedback closes a bounded loop | A defect can cause one repaired candidate linked to the prior SHA and QA evidence, then one new QA run; previous QA pass becomes stale, a second defect stops for a human, and only a human authorizes release |
 
 ## 6. User journeys
@@ -97,7 +97,7 @@ An owner posts a task mention in a private channel. The keyless agent reads thro
 
 ### Unified Figma → QA → review pipeline
 
-The Figma agent completes its own anchored A1/A2/A3/G0 run and posts a minimal candidate receipt to the shared project handoff channel. Its scoped grant permits a `qa.review_candidate` request for that exact candidate. The QA agent accepts the request, checks a protected isolated preview against the complete design and task input, and posts a signed result with evidence. If QA finds a defect, the Figma agent may generate one revised candidate and request a fresh QA run; the old QA result cannot certify the new SHA. After a pass or a second defect, the owner decides the next product action. Internal Figma and QA group discussions stay in their own channels.
+The Figma agent completes its own anchored A1/A2/A3/G0 run and posts a minimal candidate receipt to the shared project handoff channel. Its scoped grant permits a `qa.review_candidate` request for that exact candidate. The QA agent verifies the immutable preview bundle and the bytes served to its isolated browser, compares them with complete design/task input held outside the generated page, and posts a signed result with evidence. If QA finds a defect, the Figma agent may generate one revised candidate and request a fresh QA run; the old QA result cannot certify the new SHA. After a pass or a second defect, the owner decides the next product action. Internal Figma and QA group discussions stay in their own channels.
 
 ## 7. Nonfunctional requirements
 

@@ -63,29 +63,31 @@ Attach source card/version, protected report reference and hash, watcher complet
 - [ ] The exact Figma screen/root/version and pinned executable revision are recorded. A1 stops at `SCREEN_REVIEW_REQUIRED` until a human confirms the complete frame.
 - [ ] A2 and A3 receipts match the A1 source identity; G0 runs in its existing isolated workspace and respects the declared model/time budget.
 - [ ] A valid generation-only G0 exit 2 appears as `generated_not_release_validated`. Build status and `browser/visual/release = not_run` are visible; no message calls it shipped.
+- [ ] A protected immutable static preview bundle has a manifest binding the candidate git tree, G0 build receipt and SHA-256 of each served file; the bundle is retrievable for later QA without a mutable preview URL.
 - [ ] Mismatched identity, missing confirmation, `BLOCKED`, timeout and missing artifact each stop further execution with an inspectable reason.
 - [ ] Product repository contents, PRs and deployment are unchanged by this slice.
 
 ### Release evidence
 
-Attach protected A1/A2/A3/G0 receipts and hashes, confirmation tied to the exact manifest, candidate git-tree/source SHA, budget result, negative-test results and reviewer decision. A candidate alone is not a production feature.
+Attach protected A1/A2/A3/G0 receipts and hashes, confirmation tied to the exact design manifest, candidate git-tree/source SHA, preview bundle/file-hash manifest, budget result, negative-test results and reviewer decision. A candidate alone is not a production feature.
 
 ## 5. Later organization capabilities
 
 ### Slice 3: independent candidate QA
 
-- [ ] A human can request `qa.review_candidate` for one immutable Figma candidate. The QA agent receives the exact candidate SHA, isolated preview, full screen/task reference, G0 receipts and budget.
-- [ ] A real browser check of the preview produces a revision-bound `PASS`, `DEFECT`, `BLOCKED` or `INPUT_INCOMPLETE` with protected evidence. A QA-07 prepayment landing verdict is not accepted as substitute evidence.
-- [ ] A missing preview, incomplete frame/reference or changed candidate SHA blocks QA before a product pass can be reported.
+- [ ] A human can request `qa.review_candidate` for one immutable Figma candidate. The QA agent receives the exact candidate SHA, content-addressed static bundle and file-hash manifest, full screen/task reference, G0 receipts and budget.
+- [ ] The generated page runs in a disposable preview/browser boundary without credential mounts, host-service access or arbitrary egress; only its pinned static origin and explicit local fixtures are reachable. Protected design/task references enter QA separately and are not exposed to candidate JavaScript.
+- [ ] QA verifies the bundle's binding to the requested candidate tree/build receipt and hashes of HTML, scripts, styles and assets actually served to its browser. A real browser check then produces a revision-bound `PASS`, `DEFECT`, `BLOCKED` or `INPUT_INCOMPLETE` with protected evidence and verified bundle identity. A QA-07 prepayment landing verdict is not accepted as substitute evidence.
+- [ ] A missing preview, incomplete frame/reference, changed candidate SHA, stale/mutated served byte or unexpected outbound request blocks `PASS`.
 - [ ] The QA process cannot modify the candidate, publish a QA-07 report or trigger a product release.
 
-Evidence: one real candidate review, its browser artifacts and input hashes, an input-incomplete negative case, exact QA runner revision and local gate.
+Evidence: one real candidate review, its browser artifacts and served-byte hashes, an input-incomplete case, a stale-bundle case, an outbound-request/secret-reachability denial, exact QA runner revision and local gate.
 
 ### Slice 4: authorized cross-group handoff
 
 - [ ] One project has separate private Figma and QA group channels plus one private handoff channel with explicit membership. An agent in one group cannot read the other group's internal channel.
-- [ ] A Figma agent with a specific project/recipient/`qa.review_candidate` grant signs a request for one candidate SHA. The QA agent accepts or rejects it with a linked signed event; result refers to the same request, pipeline ID and SHA.
-- [ ] Wrong project, ungranted peer, stale candidate, expired budget and fenced generation are denied before QA browser/model execution.
+- [ ] A Figma agent with a specific project/recipient/`qa.review_candidate` grant signs a request for one candidate SHA and preview bundle digest. The QA agent accepts or rejects it with a linked signed event; result refers to the same request, pipeline ID, SHA and verified digest.
+- [ ] Wrong project, ungranted peer, stale candidate or bundle digest, expired budget and fenced generation are denied before QA browser/model execution.
 - [ ] Duplicate request delivery creates at most one QA run; cancellation/retry and relay-acknowledgement loss have an inspectable terminal or unresolved state.
 
 Evidence: signed event chain, broker grant and request IDs, recipient decision, negative tests, duplicate/cancel proof and real-relay retrieval. An owner manually forwarding the task proves the QA capability but does not complete this autonomous handoff slice.
@@ -93,7 +95,7 @@ Evidence: signed event chain, broker grant and request IDs, recipient decision, 
 ### Slice 5: one unified Figma → QA pipeline
 
 - [ ] One real confirmed Figma screen yields an exact candidate, an autonomous QA request in the handoff channel, an independent QA result and a human decision linked by one `pipeline_id`.
-- [ ] A deterministic defect fixture causes one automatic Figma repair linked to the prior candidate SHA and exact QA defect evidence, then a new QA request tied to the new SHA. The previous QA verdict is rejected as stale.
+- [ ] A deterministic defect fixture causes one automatic Figma repair linked to the prior candidate SHA and exact QA defect evidence, then a new QA request tied to the new SHA and bundle digest. The previous QA verdict is rejected as stale for either changed identity.
 - [ ] A second defect, blocked input, timeout, cancelled request or uncertain broker effect stops automatic work and requires the owner. The loop cannot exceed one automatic rework.
 - [ ] The full event chain is visible from Buzz without exposing either group's private channel or protected artifacts to the other group by default.
 - [ ] No product repository write, merge, deploy or payment action occurs from this pipeline.
