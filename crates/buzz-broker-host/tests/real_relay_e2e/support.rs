@@ -235,7 +235,16 @@ impl Relay {
 
 // ── Broker host binary ──────────────────────────────────────────────────────
 
+/// The `buzz-broker-host` binary under test: `BUZZ_E2E_BROKER_HOST_BIN` (an
+/// exact published artifact) when set, else the one Cargo built for this test.
+pub(crate) fn broker_host_bin() -> PathBuf {
+    std::env::var_os("BUZZ_E2E_BROKER_HOST_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_buzz-broker-host")))
+}
+
 pub(crate) struct BrokerHost {
+    pub(crate) bin: PathBuf,
     pub(crate) directory: tempfile::TempDir,
     pub(crate) state: PathBuf,
     pub(crate) key_file: PathBuf,
@@ -256,6 +265,7 @@ impl BrokerHost {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         Self {
+            bin: broker_host_bin(),
             state: directory.path().join("authority.db"),
             directory,
             key_file,
@@ -265,7 +275,7 @@ impl BrokerHost {
     }
 
     pub(crate) fn command(&self) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_buzz-broker-host"));
+        let mut command = tokio::process::Command::new(&self.bin);
         command
             .arg("--state")
             .arg(&self.state)
