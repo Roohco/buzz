@@ -111,9 +111,16 @@ async fn r5_scoped_peer_handoff_against_real_relay() {
     let qa = Keys::generate();
     let outsider = Keys::generate();
     // Job kinds are not kind 9, so the owner attests these agents without a
-    // kind restriction.
-    let figma_tag = buzz_sdk::nip_oa::compute_auth_tag(&owner, &figma.public_key(), "").unwrap();
-    let qa_tag = buzz_sdk::nip_oa::compute_auth_tag(&owner, &qa.public_key(), "").unwrap();
+    // kind restriction but with an expiry, as handoff agents should be.
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    let conditions = format!("created_at<{expiry}");
+    let figma_tag =
+        buzz_sdk::nip_oa::compute_auth_tag(&owner, &figma.public_key(), &conditions).unwrap();
+    let qa_tag = buzz_sdk::nip_oa::compute_auth_tag(&owner, &qa.public_key(), &conditions).unwrap();
 
     // One private handoff channel with the owner, both agents and one
     // ungranted member; a second channel stands in for another project.

@@ -104,6 +104,13 @@ Before browser review, QA verifies the bundle manifest against the requested can
 
 After that capability passes a real review, allow the Figma agent to post a signed `qa.review_candidate` request in the shared handoff channel, addressed to the QA agent. The broker/recipient checks the sender's specific grant, channel, project, candidate SHA, budget and task generation before accepting. A typed job event may be used when its emitter/consumer/cancel path is implemented; an owner-signed message remains the fallback until then. QA posts acceptance and a signed result linked to the request. The Figma adapter may perform at most one automatic rework for `DEFECT`, using the exact prior candidate and QA evidence to produce a new SHA and new QA request. The current Figma generation contract must be audited for this repair input; if it cannot consume it safely, add one bounded repair entrypoint in that harness before enabling automation. `PASS` moves to human review; a second defect, blocked input, timeout or uncertain effect stops for the owner. No agent may promote itself to reviewer of its own candidate.
 
+R5 operator rules for the scoped handoff (broker `job.*` actions):
+
+- The QA recipient runs in broker mode; only its broker host admits peer requests (`job.admit`), and only tickets it returns are work inputs. A replayed `accepted` decision resumes the same run; a `completed` decision has no ticket.
+- Handoff channels are private (never open) and contain only the owner and the participating agents; the relay's membership gate is what keeps other members out.
+- Owner attestations for handoff agents carry no kind restriction (job kinds are not kind 9) but must carry an expiry clause, e.g. `created_at<1767225600`, and are reissued before it.
+- Sender and recipient brokers share one authority state. Peer tables are additive under schema version 6, so the previous broker release still opens the state on rollback. Unpublished handoff events count as pending effects: `fence` refuses until `drain` republishes them. Rollback: `grant-revoke`, then quiesce, drain and fence the sender generation.
+
 ## 5. Identity and authorization
 
 Each agent has its own Buzz public identity and private channel membership. The model process receives only a scoped broker credential; the signing key stays with the broker/operator. A QA mirror identity and a Figma generator identity are separate. The human owner is explicit. Project membership and persona/team labels do not grant tool permissions.
