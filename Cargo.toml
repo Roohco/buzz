@@ -34,7 +34,8 @@ members = [
     "crates/buzz-datastore-tracing",
     "examples/countdown-bot",
 ]
-exclude = ["desktop/src-tauri"]
+# buzz-mesh-smoke is its own workspace: see the note in its Cargo.toml.
+exclude = ["desktop/src-tauri", "crates/buzz-mesh-smoke"]
 resolver = "2"
 
 [workspace.package]

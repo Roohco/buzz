@@ -1,0 +1,57 @@
+[package]
+name = "buzz-mesh-smoke"
+description = "Hardware/CI mesh-llm smoke harnesses (examples only; no library or binary ships)"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+publish = false
+
+# Examples-only crate (ported from upstream block/buzz #7559). These harnesses
+# link the mesh-llm SDK and native runtime, by far the most expensive subtree
+# in the repository. None of them reference `buzz_relay::` — they drive the
+# relay as an external process — so they do not belong in buzz-relay's
+# dev-dependency graph.
+#
+# Rooh fork: unlike upstream, this crate is its own workspace with its own
+# Cargo.lock (excluded from the root workspace, like desktop/src-tauri).
+# MeshLLM 0.76 requires libsqlite3-sys 0.38 while released sqlx-sqlite 0.9.0
+# (used by buzz-broker-host's store) caps it below 0.38, and both declare
+# `links = "sqlite3"`, so they cannot share one lockfile. Upstream resolves
+# this by patching sqlx-sqlite to an unreleased git revision; we keep the
+# released sqlx in the product workspace and isolate the smoke harnesses
+# instead. Fold this back into the root workspace once a released sqlx
+# accepts libsqlite3-sys >= 0.38.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+mesh-llm-sdk = { git = "https://github.com/Mesh-LLM/mesh-llm.git", tag = "v0.76.2", package = "mesh-llm-sdk", default-features = false, features = ["client", "serving"] }
+mesh-llm-host-runtime = { git = "https://github.com/Mesh-LLM/mesh-llm.git", tag = "v0.76.2", package = "mesh-llm-host-runtime", default-features = false, features = ["dynamic-native-runtime"] }
+# Relay-driven mesh lifecycle smoke (examples/mesh_relay_lifecycle_smoke.rs):
+# the relay client for discovery notes and the exact ed25519 the mesh owner
+# keys use for binding verification.
+buzz-test-client = { path = "../buzz-test-client" }
+ed25519-dalek = "=3.0.0"
+nostr = { version = "0.44", features = ["nip44", "nip98"] }
+sha2 = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "process"] }
+anyhow = "1"
+hex = "0.4"
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+serde_json = { version = "1", features = ["raw_value"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Mirrors the root workspace's `ci` profile so scripts/ci-mesh-lifecycle-smoke.sh
+# can build the harness with the same `--profile ci` it uses for the relay.
+[profile.ci]
+inherits = "release"
+lto = false
+opt-level = 1
+
+[profile.ci.package."*"]
+opt-level = 3
