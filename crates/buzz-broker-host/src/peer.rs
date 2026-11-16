@@ -1,14 +1,14 @@
-//! Broker actions for one scoped peer handoff: `job.request`, `job.cancel`
-//! (sender) and `job.admit`, `job.result` (recipient).
+//! Broker actions for one scoped peer handoff: `job.request`, `job.cancel`,
+//! `job.outcome` (sender) and `job.admit`, `job.result` (recipient).
 //!
 //! Admission happens here, in the recipient's broker host, before a ticket is
 //! returned: an unadmitted request never reaches the recipient runtime. The
 //! runtime's owner-only gate for ordinary messages is untouched; job requests
 //! are not part of `channel.read` at all.
 //!
-//! Every action holds the caller's publication lock from journaling through
-//! publication, so `fence` cannot slip between a stored event and its
-//! publication.
+//! Every signing action holds the caller's publication lock from journaling
+//! through publication, so `fence` cannot slip between a stored event and its
+//! publication. `job.outcome` signs and stores nothing, so it takes no lock.
 
 use buzz_sdk::broker::actions::job::single_tag;
 use buzz_sdk::broker::{
@@ -22,6 +22,8 @@ use crate::signing::HostSigner;
 use crate::store::peer::PeerStep;
 use crate::store::peer_admit::AdmitStep;
 use crate::store::{AuthorityStore, StoreError};
+
+pub(crate) mod outcome;
 
 /// Older request pages one `job.admit` call may scan for an undecided one.
 const MAX_ADMIT_PAGES: usize = 64;
@@ -40,6 +42,7 @@ pub(crate) async fn handle(
             | ActionArgs::JobCancel(_)
             | ActionArgs::JobResult(_)
             | ActionArgs::JobAdmit(_)
+            | ActionArgs::JobOutcome(_)
     ) {
         return None;
     }
@@ -59,6 +62,11 @@ async fn run(
     // Only an issued credential may create or take a publication lock.
     if !store.credential_known(credential).await? {
         return Err(StoreError::Unauthenticated);
+    }
+    if let ActionArgs::JobOutcome(args) = request.args() {
+        return outcome::read(store, signer, publisher, credential, args)
+            .await
+            .map(|result| (result, false));
     }
     let _guard = store.publication_lock_for_credential(credential).await?;
     match request.args() {

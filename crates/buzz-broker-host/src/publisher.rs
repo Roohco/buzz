@@ -163,7 +163,6 @@ impl RelayPublisher {
         request_event_id: Option<&str>,
         before: Option<&JobPageCursor>,
     ) -> Result<(Vec<Event>, Option<JobPageCursor>), PublishError> {
-        let url = relay_endpoint(community_relay_url, "/query")?;
         let mut filter = serde_json::json!({
             "kinds": [buzz_core::kind::KIND_JOB_REQUEST],
             "#h": [channel_id],
@@ -173,6 +172,84 @@ impl RelayPublisher {
             Some(id) => filter["ids"] = serde_json::json!([id]),
             None => filter["#p"] = serde_json::json!([signer.pubkey_hex()]),
         }
+        let (mut events, next) = self
+            .job_page(
+                signer,
+                community_relay_url,
+                filter,
+                channel_id,
+                &[buzz_core::kind::KIND_JOB_REQUEST],
+                before,
+            )
+            .await?;
+        if let Some(id) = request_event_id {
+            events.retain(|event| event.id.to_hex() == id);
+            return Ok((events, None));
+        }
+        Ok((events, next))
+    }
+
+    /// Read one page of signed decision, result, cancel and error events
+    /// (43002/43004/43005/43006) by `authors` in one channel, created at or
+    /// after `since`, oldest first, plus the cursor for the next older page.
+    ///
+    /// Job events link their request through the multi-letter `request` tag,
+    /// which relay filters cannot match, so the page is narrowed by kind,
+    /// channel and author; the caller checks the link and every other field.
+    pub(crate) async fn query_job_outcomes(
+        &self,
+        signer: &HostSigner,
+        community_relay_url: &str,
+        channel_id: &str,
+        authors: &[&str],
+        since: u64,
+        before: Option<&JobPageCursor>,
+    ) -> Result<(Vec<Event>, Option<JobPageCursor>), PublishError> {
+        const KINDS: [u32; 4] = [
+            buzz_core::kind::KIND_JOB_ACCEPTED,
+            buzz_core::kind::KIND_JOB_RESULT,
+            buzz_core::kind::KIND_JOB_CANCEL,
+            buzz_core::kind::KIND_JOB_ERROR,
+        ];
+        let filter = serde_json::json!({
+            "kinds": KINDS,
+            "authors": authors,
+            "#h": [channel_id],
+            "since": since,
+            "limit": MAX_READ_PAGE_EVENTS,
+        });
+        let (mut events, next) = self
+            .job_page(
+                signer,
+                community_relay_url,
+                filter,
+                channel_id,
+                &KINDS,
+                before,
+            )
+            .await?;
+        events.retain(|event| {
+            let author = event.pubkey.to_hex();
+            event.created_at.as_secs() >= since && authors.contains(&author.as_str())
+        });
+        Ok((events, next))
+    }
+
+    /// One page of a job-kind query in the relay's own order.
+    ///
+    /// Returns the verified events of `kinds` carrying exactly one `h` tag for
+    /// `channel_id`, oldest first, and the cursor for the next older page when
+    /// the relay returned a full one.
+    async fn job_page(
+        &self,
+        signer: &HostSigner,
+        community_relay_url: &str,
+        mut filter: serde_json::Value,
+        channel_id: &str,
+        kinds: &[u32],
+        before: Option<&JobPageCursor>,
+    ) -> Result<(Vec<Event>, Option<JobPageCursor>), PublishError> {
+        let url = relay_endpoint(community_relay_url, "/query")?;
         if let Some(cursor) = before {
             filter["until"] = serde_json::json!(cursor.created_at);
             filter["before_id"] = serde_json::json!(cursor.event_id);
@@ -211,7 +288,7 @@ impl RelayPublisher {
         if events.len() > MAX_READ_PAGE_EVENTS as usize {
             return Err(PublishError::InvalidEvent);
         }
-        let full = request_event_id.is_none() && events.len() == MAX_READ_PAGE_EVENTS as usize;
+        let full = events.len() == MAX_READ_PAGE_EVENTS as usize;
         // The relay orders `created_at DESC, id ASC` and continues a page with
         // `created_at < until OR (created_at = until AND id > before_id)`, so
         // the cursor is the last event in that order: the oldest second, and
@@ -238,10 +315,9 @@ impl RelayPublisher {
                 .filter(|tag| tag.kind().to_string() == "h")
                 .collect();
             event.verify().is_ok()
-                && u32::from(event.kind.as_u16()) == buzz_core::kind::KIND_JOB_REQUEST
+                && kinds.contains(&u32::from(event.kind.as_u16()))
                 && channels.len() == 1
                 && channels[0].content() == Some(channel_id)
-                && request_event_id.is_none_or(|id| event.id.to_hex() == id)
                 && before.is_none_or(|cursor| cursor.precedes(event))
         });
         events.sort_by(|left, right| {

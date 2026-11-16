@@ -29,6 +29,8 @@ mod lifecycle;
 pub(crate) mod peer;
 #[cfg(unix)]
 pub(crate) mod peer_admit;
+#[cfg(unix)]
+pub(crate) mod peer_outcome;
 
 #[cfg(unix)]
 const SCHEMA_VERSION: i64 = 6;

@@ -86,6 +86,17 @@ pub(super) fn correlate_identities(
                 _ => Ok(()),
             }
         }
+        (ActionArgs::JobOutcome(args), ActionOutcome::JobOutcome(outcome)) => {
+            if args.request_event_id == outcome.request_event_id {
+                Ok(())
+            } else {
+                Err(mismatch(
+                    "requestEventId",
+                    &args.request_event_id,
+                    &outcome.request_event_id,
+                ))
+            }
+        }
         // These outcomes echo no identity the request supplied.
         (ActionArgs::AuthorityStatus(_), _)
         | (ActionArgs::ChannelRead(_), _)
@@ -106,6 +117,7 @@ pub(super) fn correlate_identities(
         | (ActionArgs::JobRequest(_), _)
         | (ActionArgs::JobAdmit(_), _)
         | (ActionArgs::JobResult(_), _)
-        | (ActionArgs::JobCancel(_), _) => Ok(()),
+        | (ActionArgs::JobCancel(_), _)
+        | (ActionArgs::JobOutcome(_), _) => Ok(()),
     }
 }

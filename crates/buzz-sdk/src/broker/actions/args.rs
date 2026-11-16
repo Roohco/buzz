@@ -844,6 +844,9 @@ pub enum ActionArgs {
     /// Withdraw a peer request.
     #[serde(rename = "job.cancel")]
     JobCancel(super::job::JobCancelArgs),
+    /// Read where the sender's own peer request stands.
+    #[serde(rename = "job.outcome")]
+    JobOutcome(super::job::JobOutcomeArgs),
 }
 
 impl ActionArgs {
@@ -871,6 +874,7 @@ impl ActionArgs {
             Self::JobAdmit(_) => Action::JobAdmit,
             Self::JobResult(_) => Action::JobResult,
             Self::JobCancel(_) => Action::JobCancel,
+            Self::JobOutcome(_) => Action::JobOutcome,
         }
     }
 
@@ -904,6 +908,7 @@ impl ActionArgs {
             Self::JobAdmit(args) => Self::JobAdmit(args.validated()?),
             Self::JobResult(args) => Self::JobResult(args.validated()?),
             Self::JobCancel(args) => Self::JobCancel(args.validated()?),
+            Self::JobOutcome(args) => Self::JobOutcome(args.validated()?),
         })
     }
 }

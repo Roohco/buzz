@@ -248,9 +248,9 @@ async fn completed_replay_has_no_ticket_and_results_recheck_authority() {
 /// A fake relay with the real relay's job-request paging: `created_at DESC,
 /// id ASC`, continued by `created_at < until OR (created_at = until AND id >
 /// before_id)` (buzz-db `query_events`). Publication is acknowledged.
-type Served = Arc<std::sync::Mutex<Vec<nostr::Event>>>;
+pub(super) type Served = Arc<std::sync::Mutex<Vec<nostr::Event>>>;
 
-async fn fake_relay() -> (String, tokio::task::JoinHandle<()>, Served) {
+pub(super) async fn fake_relay() -> (String, tokio::task::JoinHandle<()>, Served) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay = format!("ws://{}", listener.local_addr().unwrap());
     let stored: Served = Arc::default();

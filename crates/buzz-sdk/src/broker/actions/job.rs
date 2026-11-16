@@ -1,5 +1,7 @@
 //! Scoped peer handoff over the agent job kinds (43001/43002/43004/43005/43006).
 //!
+//! `job.outcome` is the sender's read-only view of its own request.
+//!
 //! One agent (the sender) asks one other agent (the recipient) for one bounded
 //! capability on one exact candidate. Every handoff event is signed by the
 //! broker host holding that agent's key, so a keyless runtime only names the
@@ -17,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     absent_or_valued, absent_or_valued_hex64, channel, channel_id, event_id, hex64_field, required,
-    PubkeyHex,
+    BrokerMessage, PubkeyHex,
 };
 use crate::SdkError;
 
@@ -389,6 +391,155 @@ impl JobCancelArgs {
     }
 }
 
+/// Arguments for `job.outcome`: the sender reads where its own request stands.
+///
+/// Read-only. Only the sender generation whose broker journaled the request
+/// may read it; the host answers from verified relay events alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JobOutcomeArgs {
+    /// Project handoff channel the request was posted in.
+    #[serde(deserialize_with = "channel_id")]
+    pub channel_id: String,
+    /// Request (43001) this sender published.
+    #[serde(deserialize_with = "hex64_field")]
+    pub request_event_id: String,
+}
+
+impl JobOutcomeArgs {
+    /// Validate and normalize.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError::InvalidInput`] for a malformed channel or event id.
+    pub fn validated(&self) -> Result<Self, SdkError> {
+        Ok(Self {
+            channel_id: channel(&self.channel_id)?,
+            request_event_id: event_id(&self.request_event_id, "requestEventId")?,
+        })
+    }
+}
+
+/// Where one request stands, as its sender sees it on the relay.
+///
+/// Precedence when several apply: `cancelled` (by this sender) over the
+/// recipient's terminal `result`/`error`/`denied`, over `accepted`, over
+/// `pending`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobOutcomeState {
+    /// No verified decision yet.
+    Pending,
+    /// The recipient accepted (43002); no terminal event yet.
+    Accepted,
+    /// The recipient published a result (43004).
+    Result,
+    /// The recipient failed an accepted job (43006 linked to its acceptance).
+    Error,
+    /// The recipient denied the request before any work (43006).
+    Denied,
+    /// This sender cancelled the request (43005).
+    Cancelled,
+}
+
+impl JobOutcomeState {
+    /// The event kind of this state's terminal event, if it has one.
+    #[must_use]
+    pub fn terminal_kind(self) -> Option<u16> {
+        match self {
+            Self::Pending | Self::Accepted => None,
+            Self::Result => Some(43004),
+            Self::Error | Self::Denied => Some(43006),
+            Self::Cancelled => Some(43005),
+        }
+    }
+}
+
+/// Outcome of `job.outcome`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JobOutcome {
+    /// Where the request stands.
+    pub state: JobOutcomeState,
+    /// The request read.
+    #[serde(deserialize_with = "hex64_field")]
+    pub request_event_id: String,
+    /// The recipient's verified acceptance (43002), when one exists.
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued_hex64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub acceptance_event_id: Option<String>,
+    /// The full signed terminal event, for `result`, `error`, `denied` and
+    /// `cancelled`. Callers may re-verify it with [`BrokerMessage::verify`].
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub terminal_event: Option<BrokerMessage>,
+}
+
+impl JobOutcome {
+    /// Check that members agree with the state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError::InvalidInput`] when a member is present or absent
+    /// contrary to the state, the terminal event has the wrong kind or names
+    /// another request, or an identifier is malformed.
+    pub fn validate(&self) -> Result<(), SdkError> {
+        event_id(&self.request_event_id, "requestEventId")?;
+        if let Some(id) = &self.acceptance_event_id {
+            event_id(id, "acceptanceEventId")?;
+        }
+        let acceptance_ok = match self.state {
+            JobOutcomeState::Pending | JobOutcomeState::Denied => {
+                self.acceptance_event_id.is_none()
+            }
+            JobOutcomeState::Accepted | JobOutcomeState::Result | JobOutcomeState::Error => {
+                self.acceptance_event_id.is_some()
+            }
+            JobOutcomeState::Cancelled => true,
+        };
+        let terminal_ok = match (self.state.terminal_kind(), &self.terminal_event) {
+            (None, None) => true,
+            (Some(kind), Some(event)) => {
+                let event = event.event();
+                let linked = |name: &str| single_tag(&event.tags, name).ok();
+                event.kind.as_u16() == kind
+                    && linked(tag::REQUEST).as_deref() == Some(self.request_event_id.as_str())
+                    && match self.state {
+                        JobOutcomeState::Result | JobOutcomeState::Error => {
+                            linked(tag::ACCEPTED) == self.acceptance_event_id
+                        }
+                        JobOutcomeState::Denied => linked(tag::ACCEPTED).is_none(),
+                        _ => true,
+                    }
+            }
+            _ => false,
+        };
+        if !acceptance_ok || !terminal_ok {
+            return Err(SdkError::InvalidInput(
+                "job outcome members contradict its state".into(),
+            ));
+        }
+        if let Some(event) = &self.terminal_event {
+            let encoded = serde_json::to_vec(event)
+                .map_err(|error| SdkError::InvalidInput(error.to_string()))?
+                .len();
+            if encoded > super::MAX_ENCODED_MESSAGE_BYTES {
+                return Err(SdkError::InvalidInput(format!(
+                    "terminal event is {encoded} bytes, over the {}-byte cap",
+                    super::MAX_ENCODED_MESSAGE_BYTES
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// What the recipient host decided in one `job.admit` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -671,6 +822,86 @@ mod tests {
         ] {
             assert!(broken.validated().is_err(), "{broken:?}");
         }
+    }
+
+    fn signed(kind: u16, pairs: &[(&str, &str)]) -> BrokerMessage {
+        let keys = nostr::Keys::generate();
+        let tags: Vec<nostr::Tag> = pairs
+            .iter()
+            .map(|(name, value)| nostr::Tag::parse([*name, *value]).unwrap())
+            .collect();
+        BrokerMessage(
+            nostr::EventBuilder::new(nostr::Kind::Custom(kind), "x")
+                .tags(tags)
+                .sign_with_keys(&keys)
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn outcome_members_must_match_the_state() {
+        let request = "a".repeat(64);
+        let accepted = "b".repeat(64);
+        let outcome = |state, acceptance: Option<&str>, terminal| JobOutcome {
+            state,
+            request_event_id: request.clone(),
+            acceptance_event_id: acceptance.map(str::to_owned),
+            terminal_event: terminal,
+        };
+        let result = signed(
+            43004,
+            &[(tag::REQUEST, &request), (tag::ACCEPTED, &accepted)],
+        );
+        let denial = signed(43006, &[(tag::REQUEST, &request)]);
+        let cancel = signed(43005, &[(tag::REQUEST, &request)]);
+        for valid in [
+            outcome(JobOutcomeState::Pending, None, None),
+            outcome(JobOutcomeState::Accepted, Some(&accepted), None),
+            outcome(
+                JobOutcomeState::Result,
+                Some(&accepted),
+                Some(result.clone()),
+            ),
+            outcome(JobOutcomeState::Denied, None, Some(denial.clone())),
+            outcome(JobOutcomeState::Cancelled, None, Some(cancel.clone())),
+            outcome(
+                JobOutcomeState::Cancelled,
+                Some(&accepted),
+                Some(cancel.clone()),
+            ),
+        ] {
+            assert!(valid.validate().is_ok(), "{valid:?}");
+        }
+        let other = signed(
+            43004,
+            &[(tag::REQUEST, &"c".repeat(64)), (tag::ACCEPTED, &accepted)],
+        );
+        for broken in [
+            outcome(JobOutcomeState::Pending, Some(&accepted), None),
+            outcome(JobOutcomeState::Accepted, None, None),
+            outcome(JobOutcomeState::Result, Some(&accepted), None),
+            outcome(
+                JobOutcomeState::Result,
+                Some(&accepted),
+                Some(denial.clone()),
+            ),
+            outcome(JobOutcomeState::Result, Some(&accepted), Some(other)),
+            outcome(
+                JobOutcomeState::Result,
+                Some(&"d".repeat(64)),
+                Some(result.clone()),
+            ),
+            outcome(JobOutcomeState::Denied, None, Some(result)),
+            outcome(JobOutcomeState::Accepted, Some(&accepted), Some(cancel)),
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
+        let wire =
+            serde_json::to_value(outcome(JobOutcomeState::Denied, None, Some(denial))).unwrap();
+        assert_eq!(wire["state"], "denied");
+        assert!(wire.get("acceptanceEventId").is_none());
+        assert_eq!(wire["terminalEvent"]["kind"], 43006);
+        assert!(wire["terminalEvent"]["sig"].is_string());
     }
 
     #[test]

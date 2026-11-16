@@ -207,11 +207,13 @@ pub enum Action {
     JobResult,
     /// Withdraw the sender's own peer request.
     JobCancel,
+    /// Read where the sender's own peer request stands.
+    JobOutcome,
 }
 
 impl Action {
     /// Every action in this protocol version, in wire-name order.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::AgentsCreate,
         Self::AgentsDelete,
         Self::AgentsUpdate,
@@ -219,6 +221,7 @@ impl Action {
         Self::ChannelRead,
         Self::JobAdmit,
         Self::JobCancel,
+        Self::JobOutcome,
         Self::JobRequest,
         Self::JobResult,
         Self::LivenessPing,
@@ -258,6 +261,7 @@ impl Action {
             Self::JobAdmit => "job.admit",
             Self::JobResult => "job.result",
             Self::JobCancel => "job.cancel",
+            Self::JobOutcome => "job.outcome",
         }
     }
 
