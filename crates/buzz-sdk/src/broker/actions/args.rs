@@ -832,6 +832,18 @@ pub enum ActionArgs {
     /// Remove a managed agent.
     #[serde(rename = "agents.delete")]
     AgentsDelete(AgentsDeleteArgs),
+    /// Request one capability from a granted peer.
+    #[serde(rename = "job.request")]
+    JobRequest(super::job::JobRequestArgs),
+    /// Decide one pending peer request.
+    #[serde(rename = "job.admit")]
+    JobAdmit(super::job::JobAdmitArgs),
+    /// Publish the result of an admitted job.
+    #[serde(rename = "job.result")]
+    JobResult(super::job::JobResultArgs),
+    /// Withdraw a peer request.
+    #[serde(rename = "job.cancel")]
+    JobCancel(super::job::JobCancelArgs),
 }
 
 impl ActionArgs {
@@ -855,6 +867,10 @@ impl ActionArgs {
             Self::AgentsCreate(_) => Action::AgentsCreate,
             Self::AgentsUpdate(_) => Action::AgentsUpdate,
             Self::AgentsDelete(_) => Action::AgentsDelete,
+            Self::JobRequest(_) => Action::JobRequest,
+            Self::JobAdmit(_) => Action::JobAdmit,
+            Self::JobResult(_) => Action::JobResult,
+            Self::JobCancel(_) => Action::JobCancel,
         }
     }
 
@@ -884,6 +900,10 @@ impl ActionArgs {
             Self::AgentsCreate(args) => Self::AgentsCreate(args.validated()?),
             Self::AgentsUpdate(args) => Self::AgentsUpdate(args.validated()?),
             Self::AgentsDelete(args) => Self::AgentsDelete(args.validated()?),
+            Self::JobRequest(args) => Self::JobRequest(args.validated()?),
+            Self::JobAdmit(args) => Self::JobAdmit(args.validated()?),
+            Self::JobResult(args) => Self::JobResult(args.validated()?),
+            Self::JobCancel(args) => Self::JobCancel(args.validated()?),
         })
     }
 }

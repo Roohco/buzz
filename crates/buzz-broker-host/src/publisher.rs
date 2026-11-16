@@ -130,6 +130,82 @@ impl RelayPublisher {
         Ok(event)
     }
 
+    /// Read signed job requests (43001) addressed to this signer in one
+    /// channel, oldest first. With `request_event_id`, only that event.
+    ///
+    /// Every returned event is verified here and carries exactly one `h` tag
+    /// for the channel; admission still re-checks everything it relies on.
+    pub(crate) async fn query_job_requests(
+        &self,
+        signer: &HostSigner,
+        community_relay_url: &str,
+        channel_id: &str,
+        request_event_id: Option<&str>,
+    ) -> Result<Vec<Event>, PublishError> {
+        let url = relay_endpoint(community_relay_url, "/query")?;
+        let mut filter = serde_json::json!({
+            "kinds": [buzz_core::kind::KIND_JOB_REQUEST],
+            "#h": [channel_id],
+            "limit": MAX_READ_PAGE_EVENTS,
+        });
+        match request_event_id {
+            Some(id) => filter["ids"] = serde_json::json!([id]),
+            None => filter["#p"] = serde_json::json!([signer.pubkey_hex()]),
+        }
+        let body = serde_json::to_vec(&serde_json::json!([filter]))
+            .map_err(|_| PublishError::InvalidEvent)?;
+        let authorization = signer
+            .nip98_authorization(url.as_str(), &body)
+            .map_err(|_| PublishError::Unavailable)?;
+        let mut response = self
+            .client
+            .post(url)
+            .header("authorization", authorization)
+            .header("x-auth-tag", signer.auth_tag_json())
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|_| PublishError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(PublishError::Unavailable);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| PublishError::Unavailable)?
+        {
+            if chunk.len() > MAX_READ_RESPONSE_BYTES - bytes.len() {
+                return Err(PublishError::ResponseTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let mut events: Vec<Event> =
+            serde_json::from_slice(&bytes).map_err(|_| PublishError::InvalidEvent)?;
+        if events.len() > MAX_READ_PAGE_EVENTS as usize {
+            return Err(PublishError::InvalidEvent);
+        }
+        events.retain(|event| {
+            let channels: Vec<_> = event
+                .tags
+                .iter()
+                .filter(|tag| tag.kind().to_string() == "h")
+                .collect();
+            event.verify().is_ok()
+                && u32::from(event.kind.as_u16()) == buzz_core::kind::KIND_JOB_REQUEST
+                && channels.len() == 1
+                && channels[0].content() == Some(channel_id)
+                && request_event_id.is_none_or(|id| event.id.to_hex() == id)
+        });
+        events.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(events)
+    }
+
     pub(crate) async fn query_channel(
         &self,
         signer: &HostSigner,

@@ -187,6 +187,20 @@ async fn action(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
         return broker_response(response);
     }
     #[cfg(unix)]
+    if let Some(effects) = &state.effects {
+        if let Some(response) = crate::peer::handle(
+            &state.store,
+            &effects.signer,
+            &effects.publisher,
+            &credential,
+            &request,
+        )
+        .await
+        {
+            return broker_response(response);
+        }
+    }
+    #[cfg(unix)]
     if matches!(request.action(), Action::MessagePost | Action::MessageReply) {
         if let Some(effects) = &state.effects {
             return broker_response(

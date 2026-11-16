@@ -52,6 +52,16 @@ pub(crate) fn read_identity(path: &Path) -> Result<AuthorityIdentity, IssuerErro
     identity.validated().map_err(|_| IssuerError::AuthorityFile)
 }
 
+#[cfg(unix)]
+pub(crate) fn read_grant(path: &Path) -> Result<crate::store::peer::PeerGrantFile, IssuerError> {
+    let metadata = std::fs::metadata(path).map_err(|_| IssuerError::AuthorityFile)?;
+    if !is_bounded_authority_file(&metadata) {
+        return Err(IssuerError::AuthorityFile);
+    }
+    let bytes = std::fs::read(path).map_err(|_| IssuerError::AuthorityFile)?;
+    serde_json::from_slice(&bytes).map_err(|_| IssuerError::AuthorityFile)
+}
+
 fn is_bounded_authority_file(metadata: &std::fs::Metadata) -> bool {
     metadata.is_file() && metadata.len() <= MAX_AUTHORITY_FILE_BYTES
 }

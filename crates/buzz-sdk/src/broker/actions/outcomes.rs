@@ -422,6 +422,18 @@ pub enum ActionOutcome {
     /// `agents.delete` succeeded.
     #[serde(rename = "agents.delete")]
     AgentsDelete(AgentsDeleteOutcome),
+    /// `job.request` published the signed request (43001).
+    #[serde(rename = "job.request")]
+    JobRequest(EventPublished),
+    /// `job.admit` decided (or found nothing to decide).
+    #[serde(rename = "job.admit")]
+    JobAdmit(Box<super::job::JobAdmission>),
+    /// `job.result` published the signed result (43004) or error (43006).
+    #[serde(rename = "job.result")]
+    JobResult(EventPublished),
+    /// `job.cancel` published the signed cancel (43005).
+    #[serde(rename = "job.cancel")]
+    JobCancel(EventPublished),
 }
 
 impl ActionOutcome {
@@ -445,6 +457,10 @@ impl ActionOutcome {
             Self::AgentsCreate(_) => Action::AgentsCreate,
             Self::AgentsUpdate(_) => Action::AgentsUpdate,
             Self::AgentsDelete(_) => Action::AgentsDelete,
+            Self::JobRequest(_) => Action::JobRequest,
+            Self::JobAdmit(_) => Action::JobAdmit,
+            Self::JobResult(_) => Action::JobResult,
+            Self::JobCancel(_) => Action::JobCancel,
         }
     }
 
@@ -495,7 +511,10 @@ impl ActionOutcome {
             | Self::StoragePut(published)
             | Self::PresenceSet(published)
             | Self::TypingSet(published)
-            | Self::LivenessPing(published) => {
+            | Self::LivenessPing(published)
+            | Self::JobRequest(published)
+            | Self::JobResult(published)
+            | Self::JobCancel(published) => {
                 event_id(&published.event_id, "eventId")?;
             }
             Self::StorageAddress(address) => {
@@ -504,6 +523,7 @@ impl ActionOutcome {
             // Neither a record body nor a batch receipt carries an identifier or
             // cursor to check.
             Self::StorageGet(_) | Self::ObserverEmit(_) => {}
+            Self::JobAdmit(admission) => admission.validate()?,
             Self::AgentsCreate(outcome) => {
                 channel(&outcome.channel_id)?;
                 required(&outcome.display_name, "display name", MAX_NAME_CHARS)?;

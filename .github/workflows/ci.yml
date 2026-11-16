@@ -248,6 +248,13 @@ jobs:
         env:
           RELAY_URL: ws://localhost:3000
           R1_EVIDENCE_OUT: ${{ runner.temp }}/r1-evidence/r1-broker-real-relay.json
+      - name: R5 scoped peer handoff proof
+        # Two keyless agents on one broker state: granted Figma -> QA request
+        # accepted once with a linked result; lost ACK reconciles; ungranted
+        # peer, wrong channel and fenced sender generation are denied.
+        run: cargo test -p buzz-broker-host --test real_relay_e2e r5_peer::r5_scoped_peer_handoff_against_real_relay -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
       - name: Build keyless ACP binaries
         run: cargo build -p buzz-acp -p buzz-cli
       - name: Managed ACP liveness proof

@@ -9,6 +9,7 @@ use crate::SdkError;
 use buzz_core::engram::validate_slug;
 
 pub mod args;
+pub mod job;
 pub mod outcomes;
 
 pub use args::{
@@ -198,16 +199,28 @@ pub enum Action {
     AgentsUpdate,
     /// Remove a managed agent the requester owns.
     AgentsDelete,
+    /// Ask one granted peer agent for one bounded capability.
+    JobRequest,
+    /// Let the recipient host decide one pending peer request.
+    JobAdmit,
+    /// Publish the one result of an admitted peer job.
+    JobResult,
+    /// Withdraw the sender's own peer request.
+    JobCancel,
 }
 
 impl Action {
     /// Every action in this protocol version, in wire-name order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 20] = [
         Self::AgentsCreate,
         Self::AgentsDelete,
         Self::AgentsUpdate,
         Self::AuthorityStatus,
         Self::ChannelRead,
+        Self::JobAdmit,
+        Self::JobCancel,
+        Self::JobRequest,
+        Self::JobResult,
         Self::LivenessPing,
         Self::MessagePost,
         Self::MessageReply,
@@ -241,6 +254,10 @@ impl Action {
             Self::AgentsCreate => "agents.create",
             Self::AgentsUpdate => "agents.update",
             Self::AgentsDelete => "agents.delete",
+            Self::JobRequest => "job.request",
+            Self::JobAdmit => "job.admit",
+            Self::JobResult => "job.result",
+            Self::JobCancel => "job.cancel",
         }
     }
 
