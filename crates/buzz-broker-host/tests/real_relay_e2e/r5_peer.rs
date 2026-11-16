@@ -11,8 +11,8 @@ use buzz_broker_client::HttpBrokerClient;
 use buzz_sdk::broker::actions::job::{single_tag, tag};
 use buzz_sdk::broker::{
     ActionArgs, ActionOutcome, BrokerErrorCode, BrokerResult, JobAdmission, JobAdmitArgs,
-    JobDecision, JobHandoff, JobRequestArgs, JobResultArgs, JobVerdict, PubkeyHex,
-    CAPABILITY_QA_REVIEW_CANDIDATE,
+    JobDecision, JobHandoff, JobOutcome, JobOutcomeArgs, JobOutcomeState, JobRequestArgs,
+    JobResultArgs, JobVerdict, PubkeyHex, CAPABILITY_QA_REVIEW_CANDIDATE,
 };
 use nostr::{Event, EventBuilder, Keys, Kind, Tag};
 use serde_json::json;
@@ -86,6 +86,22 @@ fn admission(verdict: &Verdict) -> JobAdmission {
             outcome: ActionOutcome::JobAdmit(admission),
         } => admission.as_ref().clone(),
         _ => panic!("expected a job admission, got {}", verdict.label()),
+    }
+}
+
+fn outcome_args(channel: &str, request: &str) -> ActionArgs {
+    ActionArgs::JobOutcome(JobOutcomeArgs {
+        channel_id: channel.to_owned(),
+        request_event_id: request.to_owned(),
+    })
+}
+
+fn job_outcome(verdict: &Verdict) -> JobOutcome {
+    match &verdict.result {
+        BrokerResult::Succeeded {
+            outcome: ActionOutcome::JobOutcome(outcome),
+        } => outcome.as_ref().clone(),
+        _ => panic!("expected a job outcome, got {}", verdict.label()),
     }
 }
 
@@ -269,6 +285,35 @@ async fn r5_scoped_peer_handoff_against_real_relay() {
     }
     eprintln!("[r5] request={request_id} accepted={accepted_id} result={result_id}");
 
+    // (b2) The Figma sender, holding only its bearer, reads the outcome of its
+    // own request from the relay; QA (another sender) cannot read it.
+    let read = job_outcome(
+        &send(
+            &figma_client,
+            &prepare("r5-outcome-1", outcome_args(&channel, &request_id)),
+        )
+        .await,
+    );
+    assert_eq!(read.state, JobOutcomeState::Result);
+    assert_eq!(read.request_event_id, request_id);
+    assert_eq!(
+        read.acceptance_event_id.as_deref(),
+        Some(accepted_id.as_str())
+    );
+    let terminal = read.terminal_event.clone().expect("terminal event");
+    assert!(terminal.verify().is_ok(), "terminal event verifies");
+    assert_eq!(terminal.event(), &result_event, "the relay's own copy");
+    eprintln!(
+        "[r5] job.outcome={}",
+        serde_json::to_string(&read).expect("outcome serializes")
+    );
+    let foreign = send(
+        &qa_client,
+        &prepare("r5-outcome-foreign", outcome_args(&channel, &request_id)),
+    )
+    .await;
+    assert_eq!(foreign.failure_code(), Some(BrokerErrorCode::Unauthorized));
+
     // (c) Lost acknowledgement on the sender side reconciles to one event.
     proxy.set(DROP_RESPONSES);
     let lossy = prepare(
@@ -398,6 +443,15 @@ async fn r5_scoped_peer_handoff_against_real_relay() {
     )
     .await;
     assert_eq!(refused.failure_code(), Some(BrokerErrorCode::Unauthorized));
+    // Reading history stays allowed for the fenced generation.
+    let after_fence = job_outcome(
+        &send(
+            &figma_client,
+            &prepare("r5-outcome-fenced", outcome_args(&channel, &request_id)),
+        )
+        .await,
+    );
+    assert_eq!(after_fence, read);
 
     // Operator status is readable and holds no secrets.
     let status = figma_broker.run(&["peer-status".as_ref()]).await;

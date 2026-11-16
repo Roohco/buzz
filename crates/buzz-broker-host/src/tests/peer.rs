@@ -10,6 +10,7 @@ use buzz_sdk::broker::{
 use nostr::{EventBuilder, Keys, Kind, Tag};
 use std::os::unix::fs::PermissionsExt as _;
 
+mod outcome;
 mod regressions;
 
 use crate::credential::{self, CredentialDigest};

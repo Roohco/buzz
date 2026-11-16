@@ -434,6 +434,9 @@ pub enum ActionOutcome {
     /// `job.cancel` published the signed cancel (43005).
     #[serde(rename = "job.cancel")]
     JobCancel(EventPublished),
+    /// `job.outcome` read where the sender's request stands.
+    #[serde(rename = "job.outcome")]
+    JobOutcome(Box<super::job::JobOutcome>),
 }
 
 impl ActionOutcome {
@@ -461,6 +464,7 @@ impl ActionOutcome {
             Self::JobAdmit(_) => Action::JobAdmit,
             Self::JobResult(_) => Action::JobResult,
             Self::JobCancel(_) => Action::JobCancel,
+            Self::JobOutcome(_) => Action::JobOutcome,
         }
     }
 
@@ -524,6 +528,7 @@ impl ActionOutcome {
             // cursor to check.
             Self::StorageGet(_) | Self::ObserverEmit(_) => {}
             Self::JobAdmit(admission) => admission.validate()?,
+            Self::JobOutcome(outcome) => outcome.validate()?,
             Self::AgentsCreate(outcome) => {
                 channel(&outcome.channel_id)?;
                 required(&outcome.display_name, "display name", MAX_NAME_CHARS)?;

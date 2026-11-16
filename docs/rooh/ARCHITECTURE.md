@@ -38,7 +38,7 @@ The bridges may run near their harnesses and connect outbound to the broker/rela
 | Project record / teams | Shipped as grouping | Navigation only; no implicit repo/tool authority |
 | Broker host | Status, address, channel read, message post/reply | Keyless pilot transport |
 | Broker authority/effect journal | Task/generation authority and request-ID journal | Fence and reconcile a single effect |
-| Job kinds 43001–43006 | Relay accepts 43001/43002/43004/43005/43006 as member-only channel events (43003 rejected); broker `job.request`/`job.admit`/`job.result`/`job.cancel` sign them for keyless agents | R5 scoped handoff: one operator grant (sender generation → recipient, channel, `qa.review_candidate`) checked by the recipient broker before any ticket |
+| Job kinds 43001–43006 | Relay accepts 43001/43002/43004/43005/43006 as member-only channel events (43003 rejected); broker `job.request`/`job.admit`/`job.result`/`job.cancel` sign them for keyless agents; `job.outcome` lets the sender read its own request's state without signing | R5 scoped handoff: one operator grant (sender generation → recipient, channel, `qa.review_candidate`) checked by the recipient broker before any ticket |
 | Workflow approval executor | Cannot persist/resume approval run | Do not use for merge, deploy or access grants |
 | Broker ACP peer dispatch | Owner-only sender in broker mode (unchanged); job kinds never reach `channel.read` | Peer work enters only through `job.admit` tickets; R6 wires the QA runtime to them |
 | Voice broker and relay proof | Draft PR chain, not released | Future UI over the same capability checks |
@@ -109,6 +109,7 @@ R5 operator rules for the scoped handoff (broker `job.*` actions):
 - The QA recipient runs in broker mode; only its broker host admits peer requests (`job.admit`), and only tickets it returns are work inputs. A replayed `accepted` decision resumes the same run; a `completed` decision has no ticket.
 - Handoff channels are private (never open) and contain only the owner and the participating agents; the relay's membership gate is what keeps other members out.
 - Owner attestations for handoff agents carry no kind restriction (job kinds are not kind 9) but must carry an expiry clause, e.g. `created_at<1767225600`, and are reissued before it.
+- The sender reads its request's state with `job.outcome` (read-only, no signing, no store writes). Only the generation whose journal holds the request may read it (also while quiescing or fenced); anyone else gets `unauthorized` before any relay query. The answer uses only relay events that verify, carry `request=<id>`, come from the granted recipient (43002/43004/43006) or this sender (43005) and repeat the request's `pipeline_id`/`candidate_sha`/`preview_bundle_digest` (a denial may omit them); other events are ignored and counted. Precedence: `cancelled` > `result`/`error`/`denied` > `accepted` > `pending`; a 43006 linked to an acceptance is `error`, otherwise `denied`.
 - Sender and recipient brokers share one authority state. Peer tables are additive under schema version 6, so the previous broker release still opens the state on rollback. Unpublished handoff events count as pending effects: `fence` refuses until `drain` republishes them. Rollback: `grant-revoke`, then quiesce, drain and fence the sender generation.
 
 ## 5. Identity and authorization

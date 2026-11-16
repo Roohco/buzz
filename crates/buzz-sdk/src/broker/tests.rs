@@ -160,7 +160,26 @@ fn action_fixtures() -> Vec<ActionArgs> {
             request_event_id: EVENT.into(),
             reason: "superseded".into(),
         }),
+        ActionArgs::JobOutcome(JobOutcomeArgs {
+            channel_id: CHANNEL.into(),
+            request_event_id: EVENT.into(),
+        }),
     ]
+}
+
+/// A signed job result (43004) linked to request and acceptance `EVENT`.
+fn signed_job_result(keys: &Keys) -> BrokerMessage {
+    let event = EventBuilder::new(Kind::Custom(43004), "fixture review passed")
+        .tags([
+            Tag::parse(["h", CHANNEL]).expect("h tag"),
+            Tag::parse(["p", PUBKEY]).expect("p tag"),
+            Tag::parse(["request", EVENT]).expect("request tag"),
+            Tag::parse(["accepted", EVENT]).expect("accepted tag"),
+            Tag::parse(["verdict", "PASS"]).expect("verdict tag"),
+        ])
+        .sign_with_keys(keys)
+        .expect("fixture event signs");
+    BrokerMessage(event)
 }
 
 fn handoff() -> JobHandoff {
@@ -253,6 +272,12 @@ fn outcome_fixtures(keys: &Keys) -> Vec<ActionOutcome> {
             kind: 43005,
             created_at: 1_764_000_003,
         }),
+        ActionOutcome::JobOutcome(Box::new(JobOutcome {
+            state: JobOutcomeState::Result,
+            request_event_id: EVENT.into(),
+            acceptance_event_id: Some(EVENT.into()),
+            terminal_event: Some(signed_job_result(keys)),
+        })),
     ]
 }
 
@@ -1150,6 +1175,7 @@ fn every_payload_has_an_exact_and_secret_free_wire_schema() {
             vec!["evidenceSha256", "requestEventId", "summary", "verdict"],
         ),
         ("job.cancel/args", vec!["reason", "requestEventId"]),
+        ("job.outcome/args", vec!["channelId", "requestEventId"]),
         // Outcomes.
         ("authority.status/outcome", vec!["identity", "state"]),
         ("channel.read/outcome", vec!["messages", "nextCursor"]),
@@ -1189,6 +1215,15 @@ fn every_payload_has_an_exact_and_secret_free_wire_schema() {
         ),
         ("job.result/outcome", vec!["createdAt", "eventId", "kind"]),
         ("job.cancel/outcome", vec!["createdAt", "eventId", "kind"]),
+        (
+            "job.outcome/outcome",
+            vec![
+                "acceptanceEventId",
+                "requestEventId",
+                "state",
+                "terminalEvent",
+            ],
+        ),
         (
             "authority.status/identity",
             vec![
