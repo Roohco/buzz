@@ -214,6 +214,66 @@ jobs:
       - name: Tests
         run: cargo test -p buzz-broker-host --all-targets
 
+  broker-relay-e2e:
+    # R1 proof: the broker host binary against a real relay built from this
+    # commit. Covers keyless read/reply, outsider denial, exact retry,
+    # lost ACK, relay outage, quiesce/drain/fence and successor admission,
+    # managed ACP poller liveness, and uploads redacted, independently
+    # verified event timelines.
+    name: Broker Real-Relay E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [changes]
+    if: github.ref == 'refs/heads/release' || needs.changes.outputs.broker_host == 'true' || needs.changes.outputs.relay == 'true'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          key: broker-relay-e2e
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Start relay
+        run: ./scripts/start-relay-for-tests.sh
+      - name: Map the canonical loopback community host
+        # The broker reaches the relay by the authority's canonical community
+        # URL, which maps every loopback spelling to 127.0.0.1. The relay binds
+        # tenants by Host, so the proof community needs that host mapped.
+        run: |
+          docker exec -e PGPASSWORD=buzz_dev buzz-postgres psql -U buzz -d buzz -v ON_ERROR_STOP=1 -qtA -c \
+            "INSERT INTO communities (id, host) VALUES ('00000000-0000-4000-8000-0000000c0de1', '127.0.0.1:3000') ON CONFLICT (lower(host)) DO NOTHING;"
+      - name: Broker real-relay proof
+        run: cargo test -p buzz-broker-host --test real_relay_e2e r1_broker_authority_against_real_relay -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
+          R1_EVIDENCE_OUT: ${{ runner.temp }}/r1-evidence/r1-broker-real-relay.json
+      - name: Build keyless ACP binaries
+        run: cargo build -p buzz-acp -p buzz-cli
+      - name: Managed ACP liveness proof
+        # Deterministic fixture ACP peer (no model): reply, stay idle past the
+        # earlier ~30s poller exit, answer a second task, exit on quiesce.
+        run: cargo test -p buzz-broker-host --test real_relay_e2e acp_liveness::r1_keyless_acp_stays_live_against_real_relay -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
+          BUZZ_E2E_ACP_BIN: ${{ github.workspace }}/target/debug/buzz-acp
+          BUZZ_E2E_CLI_BIN: ${{ github.workspace }}/target/debug/buzz
+          R1_ACP_EVIDENCE_OUT: ${{ runner.temp }}/r1-evidence/r1-acp-liveness.json
+      - name: Upload R1 evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: r1-broker-real-relay-evidence
+          path: ${{ runner.temp }}/r1-evidence/
+          if-no-files-found: ignore
+      - name: Upload relay log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: broker-relay-e2e-relay-log
+          path: /tmp/buzz-relay.log
+          if-no-files-found: ignore
+
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest

@@ -45,6 +45,12 @@ verification artifact.
 
 ## Open R1 gate
 
+Update: the CI job `broker-relay-e2e` now reproduces this chain against a
+relay built from the same commit. It covers the ACP long-running poll check
+(item 2), independent signature verification and the redacted timeline (item
+3). See [R1-ci-proof-evidence.md](R1-ci-proof-evidence.md). Item 1 (the run on
+the deployed canary image) and item 4 remain open.
+
 1. Repeat the end-to-end proof with the exact Rooh-pinned relay, broker and ACP
    revisions. The local broker and ACP images above are from earlier/personal
    builds, and the relay is newer upstream. Package access or an isolated CI
