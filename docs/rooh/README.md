@@ -11,6 +11,7 @@ This directory is the reviewable contract for the Rooh-owned `Roohco/buzz` fork.
 | [Definition of Done](DOD.md) | Evidence required to call each slice complete and production ready |
 | [Decision records and job telemetry](decision-records.md) | Reviewer reply format, label taxonomy, decision record and per-job telemetry fields |
 | [Technical roadmap](ROADMAP.md) | Dependency order, delivery slices, local/remote gates and stop criteria |
+| [Pilot deployment](PILOT-deploy.md) | What the pilot runs, identities by pubkey, channels, grant, operate/rollback, pending owner steps |
 | [ADR 0001](adr/0001-rooh-owned-fork.md) | Rooh ownership, upstream relationship and release provenance |
 | [ADR 0002](adr/0002-coordination-not-replacement.md) | Buzz coordinates; project harnesses execute |
 | [ADR 0003](adr/0003-authority-and-agent-identity.md) | Identity, scoped broker authority and human gates |
