@@ -22,7 +22,8 @@ Optional free text: why. It is never stored.
   - For a QA-07 result, the revision is the Trello card's `dateLastActivity`, for example `2026-11-06t13:18:52.631z`. A 7-character prefix such as `2026-11` matches every version from that month and is a weak check. To bind a decision to one card version, quote the whole value.
 - The `revision` value must be one token, with no spaces. If a `revision:` line contains prose, the decision still counts without a revision. The ingest log records the warning `revision_unparsable`.
 - Keys are case-insensitive. `:` and `=` both work as separators.
-- Markdown that a chat client adds is removed before matching: list and quote markers, `*` or backtick emphasis, and underscores wrapping a word. For example, `- **Decision:** _approved_` is read as `decision: approved`. Underscores inside a value, as in `false_positive`, are kept.
+- Markdown that a chat client adds is removed before matching: list markers, `*` or backtick emphasis, and underscores wrapping a word. For example, `- **Decision:** _approved_` is read as `decision: approved`. Underscores inside a value, as in `false_positive`, are kept.
+- Blockquotes are not stripped. A quoted line such as `> decision: approved` is someone else's words and never counts.
 - In values, spaces and hyphens become `_`, so `Needs rework` and `visual-mismatch` are accepted. Other lines are ignored.
 - **To change a decision, post a new reply.** A later decision by any allowed reviewer on the same result replaces the earlier one in reports. Records are never rewritten; the latest `ts` is in force.
 - Editing a Buzz message (kind 40003) or deleting it (kind 5) does not change the record. The broker's `channel.read` returns only kinds 9, 40002, 40008, 45001 and 45003, so the bridge never sees edits or deletions. A deleted decision stays recorded until a newer reply replaces it.
@@ -91,7 +92,7 @@ Where each result's time comes from:
 | --- | --- |
 | QA-07 result | Ledger publish time (`updated_at` of the published record), or the signed event when the read reaches it |
 | `qa.review_candidate` result (43004) | Ledger `result_published_at`. `channel.read` never returns job events |
-| Figma candidate post | Signed event when the read reaches it; the pipeline ledger keeps no candidate time |
+| Figma candidate post | Signed event when the read reaches it. The attempt's `candidatePostedAt` (request time) bounds the read only |
 | QA result in a Figma pipeline | Ledger `result.createdAt`: the signed `created_at` of the terminal event, recorded at poll time |
 | QA-pass owner notice | Ledger `humanReview.publishedAt`, or the signed event when the read reaches it |
 
@@ -110,15 +111,26 @@ Each command reads the channel through the broker's `channel.read`.
   - the host has nothing older;
   - a page reaches below the read bound;
   - 200 pages (3,200 events) have been read.
-- The read bound is the time of the oldest result that is still undecided or was published within the last 30 days, minus 5 minutes. A reply cannot predate its result.
-- If such a result has no known time, the bound is open and reading continues until the host has nothing older or the page cap.
-- Decided results older than 30 days are not re-read, so a changed decision on them is not picked up.
+- Only results published within the lookback count, whether decided or not. The lookback is 30 days by default; set `BUZZ_DECISION_LOOKBACK_DAYS` to change it. Most QA-07 results never get a reply, so an old undecided result must not keep the window open.
+- The read bound is the earliest time known to precede each counted result's post, minus 15 minutes for relay clock drift. A reply cannot predate its result.
+  - QA-07: `first_seen_at`.
+  - `qa.review_candidate`: `started_at`.
+  - Figma candidate: `candidatePostedAt`, the time just before the post was requested.
+  - Figma QA result and owner notice: their ledger times.
+- A result with no known time counts as the start of the lookback.
+- A reply to a result older than the lookback, including a changed decision, is not picked up.
 - Cursors are not persisted. Re-reading is idempotent.
 - If the page cap is reached while older messages remain, the command still records what it read, prints a warning and exits with code 3. Older replies may then be missing.
 
 With `--events <file>`, the command reads a JSON array, `{messages}` or JSONL file of signed events instead of the broker. The same checks apply, including the channel tag and the 15-minute bound.
 
-The ingest lock is `<sidecar>.lock` and holds the process id. A lock left by a dead process is taken over, and a live holder makes the ingest fail without writing anything.
+The ingest lock is `<sidecar>.lock`, and the QA job adapter's `adapter.lock` works the same way.
+
+- The lock holds the process id. It is created atomically: the id is written to a temporary file, which is then hard-linked to the lock path.
+- A live holder makes the ingest fail without writing anything.
+- A lock left by a dead process is taken over. The stale lock is renamed aside, then checked to be the same file; if another process got there first, it is restored and the ingest fails.
+- An empty lock counts as live for 60 seconds.
+- Release removes only the caller's own lock.
 
 ## 5. Job telemetry
 
