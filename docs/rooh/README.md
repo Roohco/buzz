@@ -8,6 +8,7 @@ This directory is the reviewable contract for the Rooh-owned `Roohco/buzz` fork.
 | --- | --- |
 | [PRD](PRD.md) | Users, outcomes, first product slice, scope and measurable acceptance |
 | [Technical architecture](ARCHITECTURE.md) | Boundaries, contracts, data flow, authority, failure handling and rollout |
+| [R2 live evidence](plans/R2-live-evidence.md) | First real QA-07 card projected to Buzz on the pilot |
 | [Definition of Done](DOD.md) | Evidence required to call each slice complete and production ready |
 | [Decision records and job telemetry](decision-records.md) | Reviewer reply format, label taxonomy, decision record and per-job telemetry fields |
 | [Technical roadmap](ROADMAP.md) | Dependency order, delivery slices, local/remote gates and stop criteria |
