@@ -1,6 +1,6 @@
 # Decision records and job telemetry
 
-Status: implemented in the bridges, 2026-11-17 ([Roohco/qa-agent#64](https://github.com/Roohco/qa-agent/pull/64), [Roohco/figma2code-agent#342](https://github.com/Roohco/figma2code-agent/pull/342)). Contracts: `rooh.buzz.decision_record.v1`, `rooh.buzz.decision_ledger.v1`, `rooh.buzz.telemetry.v1`.
+Status: implemented in bridge PRs under review, 2026-11-17 ([Roohco/qa-agent#64](https://github.com/Roohco/qa-agent/pull/64), [Roohco/figma2code-agent#342](https://github.com/Roohco/figma2code-agent/pull/342)). Contracts: `rooh.buzz.decision_record.v1`, `rooh.buzz.decision_ledger.v1`, `rooh.buzz.telemetry.v1`.
 
 A reviewer's answer to an agent result is labeled data. This document fixes how that answer is written in Buzz, how a bridge turns it into a machine-readable record, and which per-job numbers the ledgers keep so the [§8](ARCHITECTURE.md#8-verification-and-observability) metrics (run duration, model spend, reviewer time) can be measured without a new service. Both stay in the bridge's protected ledger. Buzz carries only the signed reply ([ADR 0002](adr/0002-coordination-not-replacement.md), [ADR 0004](adr/0004-task-evidence-contract.md)). A decision here never approves a release; release gates stay in GitHub.
 
@@ -18,8 +18,14 @@ Optional free text: why. It is never stored.
 - `decision` is one of `approved`, `rejected` or `needs_rework`.
 - `label` is one value from the taxonomy below.
 - `revision` is optional. When it is present, it must equal the result's revision or be a prefix of it with at least 7 characters. Use it to guard against answering a stale candidate.
-- Keys are case-insensitive. `:` and `=` both work as separators. In values, spaces and hyphens become `_`, so `Needs rework` and `visual-mismatch` are accepted. Other lines are ignored.
-- A later decision by any allowed reviewer on the same result replaces the earlier one in reports. Records are never rewritten; the latest `ts` is in force.
+  - For a Figma candidate or a QA job result, the revision is the candidate SHA, so a 7-character prefix is specific.
+  - For a QA-07 result, the revision is the Trello card's `dateLastActivity`, for example `2026-11-06t13:18:52.631z`. A 7-character prefix such as `2026-11` matches every version from that month and is a weak check. To bind a decision to one card version, quote the whole value.
+- The `revision` value must be one token, with no spaces. If a `revision:` line contains prose, the decision still counts without a revision. The ingest log records the warning `revision_unparsable`.
+- Keys are case-insensitive. `:` and `=` both work as separators.
+- Markdown that a chat client adds is removed before matching: list and quote markers, `*` or backtick emphasis, and underscores wrapping a word. For example, `- **Decision:** _approved_` is read as `decision: approved`. Underscores inside a value, as in `false_positive`, are kept.
+- In values, spaces and hyphens become `_`, so `Needs rework` and `visual-mismatch` are accepted. Other lines are ignored.
+- **To change a decision, post a new reply.** A later decision by any allowed reviewer on the same result replaces the earlier one in reports. Records are never rewritten; the latest `ts` is in force.
+- Editing a Buzz message (kind 40003) or deleting it (kind 5) does not change the record. The broker's `channel.read` returns only kinds 9, 40002, 40008, 45001 and 45003, so the bridge never sees edits or deletions. A deleted decision stays recorded until a newer reply replaces it.
 
 ## 2. Label taxonomy
 
@@ -45,13 +51,15 @@ A reply counts only if every check passes, in this order. Otherwise it is ignore
 | --- | --- |
 | Signed Nostr event shape | `not_an_event` |
 | Stream message kind 9 or 40002 | `unsupported_kind` |
+| Exactly one `h` tag, equal to the channel the results were published in. This also applies to `--events` files | `wrong_channel` |
 | NIP-01 id matches the content | `bad_id` |
+| `created_at` is at most 15 minutes ahead of the ingesting host's clock. This applies to every reply, from the relay or from a file | `future_timestamp` |
 | Author is in the bridge's `BUZZ_REVIEWER_PUBKEYS` allowlist | `not_reviewer` |
 | BIP-340 signature by the author | `bad_signature` |
 | Exactly one `["e", <id>, <relay>, "reply"]` tag | `not_a_reply` |
 | The answered event is a result this bridge published, according to its ledger | `unknown_result` |
-| Text contains a decision; ordinary conversation is not logged | `not_a_decision` |
-| At most 4000 characters | `malformed:too_long` |
+| Text contains a `decision`, `label` or `revision` line. Ordinary conversation, however long, is not logged | `not_a_decision` |
+| A reply with decision fields is at most 4000 characters | `malformed:too_long` |
 | No key with two different values | `malformed:duplicate_field` |
 | A `decision` line is present when `label` or `revision` is given | `malformed:decision_missing` |
 | Decision value is one of the allowed values | `malformed:decision_value` |
@@ -74,8 +82,18 @@ Records are stored in a protected sidecar next to the run ledger, under `{"schem
 | `reviewer_pubkey` | Signer |
 | `ts` | Reply `created_at`, as ISO 8601 |
 | `subject_key`, `publication_kind` | Ledger key and kind of the result |
-| `result_ts`, `result_ts_source` | `event`: signed `created_at` of the result when it is among the events read. `ledger`: publish time recorded by the bridge. Otherwise null |
+| `result_ts`, `result_ts_source` | `event`: signed `created_at` of the result, when the read returned that event. `ledger`: time kept in the bridge ledger. Null otherwise. See the table below |
 | `reviewer_latency_ms` | `ts − result_ts`, or null when `result_ts` is unknown |
+
+Where each result's time comes from:
+
+| Result | Time source |
+| --- | --- |
+| QA-07 result | Ledger publish time (`updated_at` of the published record), or the signed event when the read reaches it |
+| `qa.review_candidate` result (43004) | Ledger `result_published_at`. `channel.read` never returns job events |
+| Figma candidate post | Signed event when the read reaches it; the pipeline ledger keeps no candidate time |
+| QA result in a Figma pipeline | Ledger `result.createdAt`: the signed `created_at` of the terminal event, recorded at poll time |
+| QA-pass owner notice | Ledger `humanReview.publishedAt`, or the signed event when the read reaches it |
 
 | Bridge | Command | Sidecar |
 | --- | --- | --- |
@@ -83,7 +101,24 @@ Records are stored in a protected sidecar next to the run ledger, under `{"schem
 | `qa.review_candidate` | `node scripts/buzz-decisions.mjs --ledger job` | `$QA_JOB_STATE_DIR/ledger.decisions.json` |
 | Figma pipeline | `npm run figma2code:decisions -- ingest --ledger-dir <dir> --pipeline-id <id>` | `<dir>/<pipeline_id>.decisions.json` |
 
-Each command reads the channel through the broker's `channel.read`, up to 20 pages. With `--events <file>`, it reads a JSON array, `{messages}` or JSONL file of signed events instead.
+### Read window
+
+Each command reads the channel through the broker's `channel.read`.
+
+- The host returns at most 16 events per page, newest first. Its opaque cursor pages backwards, and the bridges request exactly 16.
+- Reading stops at the first of these:
+  - the host has nothing older;
+  - a page reaches below the read bound;
+  - 200 pages (3,200 events) have been read.
+- The read bound is the time of the oldest result that is still undecided or was published within the last 30 days, minus 5 minutes. A reply cannot predate its result.
+- If such a result has no known time, the bound is open and reading continues until the host has nothing older or the page cap.
+- Decided results older than 30 days are not re-read, so a changed decision on them is not picked up.
+- Cursors are not persisted. Re-reading is idempotent.
+- If the page cap is reached while older messages remain, the command still records what it read, prints a warning and exits with code 3. Older replies may then be missing.
+
+With `--events <file>`, the command reads a JSON array, `{messages}` or JSONL file of signed events instead of the broker. The same checks apply, including the channel tag and the 15-minute bound.
+
+The ingest lock is `<sidecar>.lock` and holds the process id. A lock left by a dead process is taken over, and a live holder makes the ingest fail without writing anything.
 
 ## 5. Job telemetry
 
@@ -109,6 +144,9 @@ Cost is the provider's own estimate. On a subscription it is the API-price equiv
 Where the values are stored:
 
 - QA: `telemetry` and `result_published_at` on each job record in `$QA_JOB_STATE_DIR/ledger.json`.
+  - Telemetry is written wherever spend may have happened, including results that are `BLOCKED` after a budget or review error.
+  - After a crash, telemetry is rebuilt from the adapter's hash-checked `review-result.json`. The end time is when that file was written, so a restart does not inflate the duration.
+  - The sender-cancel path (Roohco/qa-agent#63) is to use the same `jobTelemetry` hook.
 - Figma: `candidate.telemetry` on the `candidate_ready` entry in `<run>/bridge-ledger.jsonl`. The source is `<G0 workspace>/evidence/model-attempt-<n>.jsonl`.
 
 ## 6. Reports for R6
@@ -116,6 +154,7 @@ Where the values are stored:
 The report commands are read-only. Each prints one row per job and then a summary.
 
 - Row fields: model, input and output tokens, cost, duration, decision in force, label and reviewer latency.
+- The Figma report has one row per published event kind (`figma2code.candidate`, `qa.review_candidate.result`, `figma2code.qa_pass_notice`). Verdicts and decisions on different events are therefore never mixed. Generation telemetry and run duration are on the candidate row.
 - Summary: p50, p90 and max duration; total and p50 cost; p50 and p90 reviewer latency; label counts.
 - Commands:
   - QA: `node scripts/buzz-telemetry-report.mjs [--json]`
@@ -125,6 +164,7 @@ The report commands are read-only. Each prints one row per job and then a summar
 
 - Export of labeled decisions to a golden set. This is research item 5, after about 20 reviews.
 - An OTel exporter or collector.
-- Persisting `channel.read` cursors. Re-reading is idempotent, so it is not needed now.
+- Persisting `channel.read` cursors. Re-reading within the bounded window is idempotent.
+- Honouring Buzz edits and deletions. The broker does not return them; post a new reply instead.
 - Storing the reviewer's free text.
 - Usage accounting inside the Figma provider proxy.
