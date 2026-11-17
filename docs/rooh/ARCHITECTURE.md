@@ -59,7 +59,7 @@ Current broker-mode ACP accepts only owner messages. A human-signed handoff can 
 | BuzzTask | Human owner, signed in Buzz | Buzz event ID, project/channel, requested bounded capability, actor, expiry and budget |
 | Run | Existing harness + adapter ledger | `run_id`, source version, pinned harness revision, attempt, generation, start/end, result |
 | Evidence | Protected project storage | Content hash, protected reference, type, producer, input revision; never raw secret in Buzz |
-| Decision | Human in source tool or signed Buzz message as applicable | Exact input/result being approved, approver, scope and timestamp |
+| Decision | Human in source tool or signed Buzz message as applicable | Exact input/result being approved, approver, scope and timestamp; a signed Buzz reply is parsed into a [decision record](decision-records.md) with a fixed label taxonomy |
 | EffectReceipt | Broker and external system | Broker request ID and effect state; external receipt if an effect occurred |
 | Pipeline | Figma adapter ledger for one delivery item | `pipeline_id`, original source version, current candidate SHA and preview bundle digest, stage attempts, latest QA result and stop reason |
 | Handoff | Signed sender and recipient in project channel | Parent event ID, recipient capability, candidate SHA, preview bundle digest, deadline/budget, acceptance/result event IDs |
@@ -166,7 +166,7 @@ Rollback disables bridge publication or command intake and fences its broker gen
 
 The minimum local gate for a code-bearing slice is the affected package's unit/integration tests plus the repository-prescribed checks. The real-relay gate checks signed event acceptance and retrieval, channel denial, duplicate replay, relay-loss reconciliation and generation fencing. The QA gate uses a real card-to-Notion-to-Slack completion and one Buzz projection. The Figma gate uses one real screen and artifact review. Exact deployed revision and image digest are recorded before claiming production Done.
 
-Use a shared `trace_id` and domain `run_id` across source, bridge, broker and harness logs. [OpenTelemetry GenAI conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md) can supply agent/tool span names; they do not require a new telemetry backend for the pilot. Record run duration, model spend, publication lag, reviewer time, rejected/invalid-input rate and pending-effect age. Never log bearer credentials or raw protected evidence.
+Use a shared `trace_id` and domain `run_id` across source, bridge, broker and harness logs. [OpenTelemetry GenAI conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md) can supply agent/tool span names; they do not require a new telemetry backend for the pilot. Record run duration, model spend, publication lag, reviewer time, rejected/invalid-input rate and pending-effect age. The per-job attribute names (OTel GenAI `gen_ai.*`), their sources and the report commands are fixed in [Decision records and job telemetry](decision-records.md). Never log bearer credentials or raw protected evidence.
 
 ## 9. Protocol boundaries and future triggers
 
