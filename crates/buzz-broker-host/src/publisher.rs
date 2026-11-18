@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use buzz_sdk::broker::{
-    ActionOutcome, BrokerMessage, ChannelReadArgs, MessagePage, MessageReplyArgs,
+    ActionOutcome, BrokerError, BrokerErrorCode, BrokerMessage, ChannelReadArgs, MessagePage,
+    MessageReplyArgs,
 };
 use buzz_sdk::ThreadRef;
 use nostr::Event;
@@ -42,6 +43,14 @@ const MAX_REACTION_RELAY_PAGES: usize = 4;
 struct RelayAck {
     accepted: bool,
     event_id: String,
+    #[serde(default)]
+    message: String,
+}
+
+/// The relay's `400` body for an event its ingest pipeline rejected.
+#[derive(Deserialize)]
+struct RelayRejection {
+    error: String,
 }
 
 impl RelayPublisher {
@@ -619,6 +628,10 @@ impl RelayPublisher {
         Ok(bytes)
     }
 
+    /// First submission of a freshly signed event. `Rejected` means the relay
+    /// refused this exact event and a follow-up query found it absent; since
+    /// no earlier attempt can have stored these bytes, that is terminal.
+    /// Retries of a journaled event go through [`Self::publish_pending`].
     pub(crate) async fn publish(
         &self,
         signer: &HostSigner,
@@ -639,19 +652,23 @@ impl RelayPublisher {
             .body(body)
             .send()
             .await;
+        let mut rejection = None;
         if let Ok(response) = response {
-            if response.status().is_success() {
-                if let Ok(ack) = response.json::<RelayAck>().await {
-                    if ack.accepted && ack.event_id == event.id.to_hex() {
-                        return Ok(());
-                    }
-                }
+            match relay_verdict(response, event).await {
+                RelayVerdict::Accepted => return Ok(()),
+                RelayVerdict::Rejected(reason) => rejection = Some(reason),
+                RelayVerdict::Unknown => {}
             }
         }
-        if self.find(signer, community_relay_url, event).await? {
-            Ok(())
-        } else {
-            Err(PublishError::Indeterminate)
+        // Only a positive absence check turns a rejection into a terminal
+        // failure: an identical publish may still have landed.
+        match (
+            self.find(signer, community_relay_url, event).await?,
+            rejection,
+        ) {
+            (true, _) => Ok(()),
+            (false, Some(reason)) => Err(PublishError::Rejected(reason)),
+            (false, None) => Err(PublishError::Indeterminate),
         }
     }
 
@@ -662,9 +679,15 @@ impl RelayPublisher {
         event: &Event,
     ) -> Result<(), PublishError> {
         if self.find(signer, community_relay_url, event).await? {
-            Ok(())
-        } else {
-            self.publish(signer, community_relay_url, event).await
+            return Ok(());
+        }
+        // An earlier attempt may have stored these bytes before the agent
+        // lost channel access, and `/query` hides events in channels the
+        // signer cannot read. Absence is therefore no proof on a retry, so
+        // a rejection here stays unresolved.
+        match self.publish(signer, community_relay_url, event).await {
+            Err(PublishError::Rejected(_)) => Err(PublishError::Indeterminate),
+            other => other,
         }
     }
 
@@ -804,6 +827,74 @@ fn relay_endpoint(community_relay_url: &str, path: &str) -> Result<reqwest::Url,
     Ok(url)
 }
 
+enum RelayVerdict {
+    Accepted,
+    /// The relay definitively refused this exact event; carries a bounded,
+    /// printable reason (empty when the relay's text is not safe to echo).
+    Rejected(String),
+    Unknown,
+}
+
+/// Largest `/events` response body read when classifying a relay verdict.
+const MAX_ACK_BYTES: usize = 16 * 1024;
+/// Longest relay reason echoed back to the agent.
+const MAX_REJECT_REASON_BYTES: usize = 120;
+
+/// Classify a `/events` response. A rejection is definitive only when the
+/// relay answered for this event: a 2xx ack with `accepted:false` naming the
+/// event, or the relay's 400 `{"error": ...}` ingest rejection. Every other
+/// status or body is unknown and must stay indeterminate.
+async fn relay_verdict(mut response: reqwest::Response, event: &Event) -> RelayVerdict {
+    let status = response.status();
+    if !status.is_success() && status != reqwest::StatusCode::BAD_REQUEST {
+        return RelayVerdict::Unknown;
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if chunk.len() <= MAX_ACK_BYTES - body.len() => {
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Ok(Some(_)) | Err(_) => return RelayVerdict::Unknown,
+        }
+    }
+    if status.is_success() {
+        return match serde_json::from_slice::<RelayAck>(&body) {
+            Ok(ack) if ack.event_id != event.id.to_hex() => RelayVerdict::Unknown,
+            Ok(ack) if ack.accepted => RelayVerdict::Accepted,
+            Ok(ack) => RelayVerdict::Rejected(safe_reason(&ack.message)),
+            Err(_) => RelayVerdict::Unknown,
+        };
+    }
+    match serde_json::from_slice::<RelayRejection>(&body) {
+        Ok(rejection) => RelayVerdict::Rejected(safe_reason(&rejection.error)),
+        Err(_) => RelayVerdict::Unknown,
+    }
+}
+
+/// The terminal broker error for an event the relay rejected and does not hold.
+pub(crate) fn rejection_error(reason: &str) -> BrokerError {
+    let message = if reason.is_empty() {
+        "relay rejected the event".to_owned()
+    } else {
+        format!("relay rejected the event: {reason}")
+    };
+    BrokerError::new(BrokerErrorCode::ActionFailed, message)
+}
+
+fn safe_reason(reason: &str) -> String {
+    if reason.len() <= MAX_REJECT_REASON_BYTES
+        && reason
+            .bytes()
+            .all(|byte| byte == b' ' || byte.is_ascii_graphic())
+    {
+        reason.to_owned()
+    } else {
+        String::new()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PublishError {
     #[error("relay URL is invalid")]
@@ -822,4 +913,7 @@ pub(crate) enum PublishError {
     Unavailable,
     #[error("relay publication outcome is indeterminate")]
     Indeterminate,
+    /// The relay refused the event and a follow-up query proved it absent.
+    #[error("relay rejected the event")]
+    Rejected(String),
 }

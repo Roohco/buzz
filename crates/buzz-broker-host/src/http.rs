@@ -351,8 +351,20 @@ impl EffectService {
                         .publish(&self.signer, &relay_url, &event)
                         .await
                 };
-                if publication.is_err() {
-                    return indeterminate(request.request_id());
+                match publication {
+                    Ok(()) => {}
+                    Err(PublishError::Rejected(reason)) => {
+                        return store
+                            .fail_message_effect(
+                                credential,
+                                request.request_id(),
+                                &event.id.to_hex(),
+                                crate::publisher::rejection_error(&reason),
+                            )
+                            .await
+                            .unwrap_or_else(|_| indeterminate(request.request_id()));
+                    }
+                    Err(_) => return indeterminate(request.request_id()),
                 }
                 store
                     .complete_message_effect(credential, request.request_id(), &event.id.to_hex())
