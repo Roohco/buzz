@@ -419,7 +419,12 @@ pub fn run() {
 
             // Create/update the local CLI symlink pointing to the
             // bundled CLI binary. Non-fatal: agents find CLI via PATH.
-            if let Ok(exe) = std::env::current_exe() {
+            // A flavored build (see `app_state::build_flavor`) ships stub
+            // sidecars and must never take over the stock `buzz` link.
+            if let Some(exe) = std::env::current_exe()
+                .ok()
+                .filter(|_| app_state::build_flavor().is_none())
+            {
                 if let Some(parent) = exe.parent() {
                     if let Err(error) = managed_agents::ensure_cli_symlink(parent, is_dev_nest) {
                         eprintln!("buzz-desktop: failed to create CLI symlink: {error}");
