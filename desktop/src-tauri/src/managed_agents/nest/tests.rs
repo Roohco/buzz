@@ -515,3 +515,9 @@ fn refresh_skill_overwrites_on_version_bump() {
         "SKILL.md must be refreshed on version bump"
     );
 }
+
+#[test]
+fn flavored_build_gets_its_own_prod_nest() {
+    assert_eq!(prod_nest_dir_name(None), ".buzz");
+    assert_eq!(prod_nest_dir_name(Some("rooh")), ".buzz-rooh");
+}

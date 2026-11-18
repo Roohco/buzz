@@ -88,7 +88,11 @@ static NEST_DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new
 /// when the Tauri app-data directory name starts with `"xyz.block.buzz.app.dev"`.
 /// Pass `false` for production (signed DMG) builds.
 pub fn init_nest_dir(is_dev: bool) {
-    let suffix = if is_dev { NEST_DIR_DEV } else { NEST_DIR_PROD };
+    let suffix = if is_dev {
+        NEST_DIR_DEV.to_string()
+    } else {
+        prod_nest_dir_name(crate::app_state::build_flavor())
+    };
     let path = dirs::home_dir().map(|h| h.join(suffix));
     // set() is a no-op when already initialized, which is correct: only the
     // first call (at boot, before any filesystem work) should win.
@@ -105,6 +109,16 @@ pub fn nest_dir() -> Option<PathBuf> {
         Some(path) => path.clone(),
         // Not yet initialized — fall back to prod path. Covers test code.
         None => dirs::home_dir().map(|h| h.join(NEST_DIR_PROD)),
+    }
+}
+
+/// Production nest directory name: `.buzz`, or `.buzz-<flavor>` for a
+/// flavored build (see `app_state::build_flavor`) so it never shares `~/.buzz`
+/// with the stock app.
+fn prod_nest_dir_name(flavor: Option<&str>) -> String {
+    match flavor {
+        Some(flavor) => format!("{NEST_DIR_PROD}-{flavor}"),
+        None => NEST_DIR_PROD.to_string(),
     }
 }
 
