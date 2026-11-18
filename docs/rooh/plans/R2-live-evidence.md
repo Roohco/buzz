@@ -37,6 +37,6 @@ A repeat bridge pass (same revision, same marker) reports `already: 1, published
 
 ## Still open for R2 Done
 
-- Owner review of this result in Buzz (owner identity not yet added to the pilot).
+- Owner review of a result in Buzz. Since 2026-11-18 the owner is a member and reviewer, results are top-level human-readable messages, and verdicts (thread replies or ✅/❌/🔁 reactions) are recorded every 5 minutes; no verdict yet.
 - Notion-failure fallback: tested separately in the suite, not observed live.
 - QA-07 Slack-acknowledgement duplicate risk: tracked separately (unchanged by the bridge).

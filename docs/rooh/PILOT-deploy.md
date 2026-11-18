@@ -1,6 +1,6 @@
 # Rooh Buzz pilot deployment
 
-Status, 2026-11-17: **pilot in progress.** Relay and two broker signers are running on the team host; channels, agent identities and the R5 grant exist; broker smoke passed for both agents. The live R2 gate (one real QA-07 card result in Buzz) waits for the next natural QA-07 completion after the bridge cron wrapper is merged and deployed (see [Pending](#pending)).
+Status, 2026-11-18: **pilot in progress.** Relay and two broker signers run on the team host; the R2 bridge publishes real QA-07 results and records reviewer verdicts (thread replies and ✅/❌/🔁 reactions). The human owner joined from the separate Buzz Rooh desktop build ([desktop-rooh-build.md](desktop-rooh-build.md)). Live R3–R6 gates are not run yet (see [Pending](#pending)).
 
 This is a public repository: the document names no host, credential or private payload. Pubkeys, image digests and loopback ports are public by nature. The exact host, channel UUIDs and grant IDs live in the operator README on the host (`~/rooh-buzz/README.md`, `channels.env`).
 
@@ -10,10 +10,11 @@ Compose project `rooh-buzz` on one shared Linux host, its own network `rooh-buzz
 
 | Service | Image (pinned by digest) | Revision | Listens |
 | --- | --- | --- | --- |
-| relay | `ghcr.io/roohco/buzz@sha256:df84f2635ccf2c45925931609671320c6c52a4b87ac33bd6e8986a67617eda7d` | `d50079403` (R5 job kinds) | `127.0.0.1:3130` HTTP/WS |
-| broker (QA-07 signer) | `ghcr.io/roohco/buzz-broker-host@sha256:6988cb86f4c0e26a7f6300964299d21c5f36227ebc639fedc5d118c1f7468ce8` | `fe284dd33` (R5 grants, `job.outcome`, `channel.read`) | `127.0.0.1:3140` `/v1/action` |
-| broker-figma (Figma2Code signer) | same digest | `fe284dd33` | `127.0.0.1:3141` `/v1/action` |
-| broker rollback (N-1, not running) | `ghcr.io/roohco/buzz-broker-host@sha256:26725cde8c0f55368d745f57a456f94a2ecb3e30c006794daba4b6e3550f6819` | `98e36c66d` | — |
+| relay | `ghcr.io/roohco/buzz@sha256:9d961908a1024af2c84bcaab537eefdbf3787ab71696cf013dc5e78d4067b37b` | `434c40a11` (R5 job kinds, cross-channel reaction guard, upstream advisories) | `127.0.0.1:3130` HTTP/WS |
+| relay rollback (N-1, not running) | `ghcr.io/roohco/buzz@sha256:df84f2635ccf2c45925931609671320c6c52a4b87ac33bd6e8986a67617eda7d` | `d50079403` | — |
+| broker (QA-07 signer) | `ghcr.io/roohco/buzz-broker-host@sha256:c12e68672868292ac68b264f4987b6cab4284e23343888f8373e8cc93a17f8bb` | `434c40a11` (R5 grants, `job.outcome`, `channel.read` + `reactionsTo`, relay rejection fails the effect) | `127.0.0.1:3140` `/v1/action` |
+| broker-figma (Figma2Code signer) | same digest | `434c40a11` | `127.0.0.1:3141` `/v1/action` |
+| broker rollback (N-1, not running) | `ghcr.io/roohco/buzz-broker-host@sha256:61525cc218f2d1e3a63fd394fc6b073b15d5eacaf06304fe31040a66de56187a` | `d06f1a7a6` (`reactionsTo`, without the rejection fix) | — |
 | postgres / redis / silo | as pinned in `deploy/compose/compose.yml` | — | internal network only |
 
 Relay settings: `BUZZ_REQUIRE_AUTH_TOKEN=true` (REST needs NIP-98), `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true`, `BUZZ_ALLOW_NIP_OA_AUTH=true` (an agent with a valid owner attestation from a relay member is admitted without its own membership row).
@@ -31,7 +32,8 @@ One `serve` holds exactly one signer (agent key + owner auth tag) and refuses be
 
 | Identity | Pubkey | Notes |
 | --- | --- | --- |
-| Pilot operator (`RELAY_OWNER_PUBKEY`, NIP-OA owner for now) | `cc9450f6580aca6afa8466f5315a3e8dc9d20710b623afa187408b8768e8b7ac` | Generated on the host by `buzz-admin generate-key`. Stands in for the human owner until the owner's key arrives. |
+| Human owner (relay admin, admin in all three channels, sole QA verdict reviewer) | `7b8c8ab2a9bd08c97594d6ce458f87a3c80305b22c6eafe85bc90ae139bbcdda` | Created in the Buzz Rooh desktop build (own keychain service). |
+| Pilot operator (`RELAY_OWNER_PUBKEY`, NIP-OA owner of both agents for now) | `cc9450f6580aca6afa8466f5315a3e8dc9d20710b623afa187408b8768e8b7ac` | Generated on the host by `buzz-admin generate-key`. Agent attestations still name this key; re-attestation under the human owner is pending. |
 | QA-07 agent | `785b9ccc6cd88a454503fdafa3a20bf62889914008bbb550704c9ce8fcbbacfb` | Generation `3dda9543-bde1-49f9-9992-e85789f7e233` |
 | Figma2Code agent | `e2cee768b8e65a2485a898c99b688e15619cfd8d823181e78a0fcb8e36890a4d` | Generation `92b922df-1723-40c7-b459-5c90a4c830e6` |
 
@@ -45,9 +47,9 @@ All channels are private streams created by the pilot operator (kind 9007, then 
 
 | Channel | Members besides the operator | Purpose |
 | --- | --- | --- |
-| `qa-results` | QA-07 | R2: one reply per completed QA-07 card run to the operator task event in this channel |
-| `figma-candidates` | Figma2Code | R3: pinned Figma candidates for human review |
-| `figma-qa` | Figma2Code, QA-07 | R5/R6: scoped Figma → QA handoff |
+| `qa-results` | QA-07, human owner | R2: one top-level message per completed QA-07 run that needs a person (bugs, unverified steps or incomplete input); verdicts as thread replies or reactions |
+| `figma-candidates` | Figma2Code, human owner | R3: pinned Figma candidates for human review |
+| `figma-qa` | Figma2Code, QA-07, human owner | R5/R6: scoped Figma → QA handoff |
 
 R5 grant (in broker state, `peer-status` shows it): sender = Figma2Code generation `92b922df-…`, recipient = QA-07 pubkey, channel = `figma-qa`, capability `qa.review_candidate`, state `active`. No other grant exists, so any other sender, recipient, channel or capability is denied by the broker.
 
@@ -103,8 +105,8 @@ $B grant-revoke --grant-id <grantId>    # new requests under it are denied
 
 ### Rollback
 
-- Broker to N-1: quiesce, drain and fence the active generations, set `BROKER_IMAGE` to the rollback digest above in `images.env`, then `./bz --profile broker up -d --wait broker broker-figma`. N-1 (`98e36c66d`) predates R5 grants and job outcome: the R5/R6 path is unavailable on it; R2 posting works.
-- Relay: set `BUZZ_IMAGE` back to the previous digest and `./bz up -d --wait relay`. Migrations are forward-only; back up first.
+- Broker to N-1: set `BROKER_IMAGE` to the rollback digest above in `images.env` (or export it for a one-off), then `./bz --profile broker up -d --wait broker broker-figma`. N-1 (`d06f1a7a6`) shares the authority state format; it only lacks the relay-rejection fix. Rehearsed 2026-11-18.
+- Relay: set `BUZZ_IMAGE` back to the rollback digest above and `./bz up -d --wait relay`. Migrations are forward-only; take a `pg_dump -Fc` first (the 2026-11-18 upgrade added none).
 - Switch R2 off without touching Buzz: remove `~/rooh-qa07/buzz-bridge.env` (or the bearer) on the host; the bridge pass exits 0 without them.
 
 ### Backup
@@ -119,13 +121,20 @@ $B grant-revoke --grant-id <grantId>    # new requests under it are denied
    `./bz exec relay buzz-admin add-member --pubkey <hex> --role admin`
    and adds you to `qa-results`, `figma-candidates` and `figma-qa` (kind 9000 from the operator key).
 
+## Monitoring and evidence (2026-11-18)
+
+- Alerting: a host cron runs `health.sh` and checks the QA-07 bridge log every 10 minutes; one message per new problem set and one recovery message go to the team's QA alert Slack channel.
+- Broker rollback rehearsed on the pilot (current → N-1 → current, each step healthy in under a minute); decision intake through the broker worked after the restore.
+- Live negative tests: a non-member key gets 403 on read and write; each agent reads an empty page for a channel it is not in; `reactionsTo` for another channel's message is refused; a broker post into a non-member channel now fails cleanly (`action_failed`, relay reason) instead of blocking the generation; a reaction whose `h` names another channel is refused by the relay.
+- R2 latency (QA-07 completion → Buzz message): median 3.4 min, max 4.8 min over 18 results (5-minute bridge cron), all published on the first attempt.
+- Daily telemetry report (duration, model, error and decision rates) is written on the host; token usage is not available from the QA runner.
+
 ## Pending
 
 | Item | Who | Blocks |
 | --- | --- | --- |
-| Merge and deploy `Roohco/qa-agent` PR #65 (bridge cron wrapper; the cron line is installed on the host and inert until the script exists) | reviewer | R2 automation |
-| One natural QA-07 card completion on the deployed revision after that | QA-07 traffic | R2 live gate |
-| Owner Buzz pubkey: add as relay admin and channel member | owner | owner review in Buzz Desktop |
-| Re-attest both agents under the owner's key instead of the pilot operator key (new `owner.auth-tag`, broker restart) | operator, after owner key | removes the stand-in owner |
+| First human verdict on a QA-07 result in Buzz | owner | R2 Done, pilot Done |
+| Re-attest both agents under the human owner's key | owner signature + operator | removes the stand-in owner (Slice 0) |
+| Live R3 run: Claude subscription token and confirmation of the chosen frame | owner, then operator | R3 → R4 → R5 → R6 live gates |
+| Team access without an SSH tunnel (TLS name or private network) | owner decision | organization use beyond one person |
 | Reissue attestations before 2027-02-15 | operator | agent publishing after expiry |
-| Monitoring/alerting for `health.sh` (not installed in cron) | operator | DoD "broker and bridge health are monitored" |
