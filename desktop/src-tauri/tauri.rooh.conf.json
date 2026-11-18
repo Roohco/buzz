@@ -1,0 +1,15 @@
+{
+  "identifier": "co.rooh.buzz.desktop",
+  "productName": "Buzz Rooh",
+  "mainBinaryName": "Buzz",
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["buzz-rooh"]
+      }
+    }
+  }
+}

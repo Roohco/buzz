@@ -6,15 +6,43 @@ fn dev_keyring_service(configured: Option<String>) -> String {
         .unwrap_or_else(|| "buzz-desktop-dev".to_string())
 }
 
-pub(crate) fn keyring_service() -> &'static str {
-    if cfg!(debug_assertions) {
-        static DEV_SERVICE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        DEV_SERVICE
-            .get_or_init(|| dev_keyring_service(std::env::var("BUZZ_DEV_KEYRING_SERVICE").ok()))
-            .as_str()
-    } else {
-        "buzz-desktop"
+/// Compile-time build flavor (`BUZZ_DESKTOP_FLAVOR`, e.g. `rooh`).
+///
+/// A flavored release build (built with a matching Tauri config overlay that
+/// changes the bundle identifier) gets its own keyring service and agent nest,
+/// so it runs beside the stock app without sharing the owner identity, stored
+/// agent keys or local agent state. Only `[a-z0-9-]{1,32}` is honored; any
+/// other value is ignored and the build behaves as stock.
+pub(crate) fn build_flavor() -> Option<&'static str> {
+    option_env!("BUZZ_DESKTOP_FLAVOR").filter(|flavor| is_valid_flavor(flavor))
+}
+
+fn is_valid_flavor(flavor: &str) -> bool {
+    !flavor.is_empty()
+        && flavor.len() <= 32
+        && flavor
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn release_keyring_service(flavor: Option<&str>) -> String {
+    match flavor {
+        Some(flavor) => format!("buzz-desktop.{flavor}"),
+        None => "buzz-desktop".to_string(),
     }
+}
+
+pub(crate) fn keyring_service() -> &'static str {
+    static SERVICE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SERVICE
+        .get_or_init(|| {
+            if cfg!(debug_assertions) {
+                dev_keyring_service(std::env::var("BUZZ_DEV_KEYRING_SERVICE").ok())
+            } else {
+                release_keyring_service(build_flavor())
+            }
+        })
+        .as_str()
 }
 
 pub(super) fn migration_marker_name(service: &str, default_name: &str) -> String {
@@ -27,7 +55,27 @@ pub(super) fn migration_marker_name(service: &str, default_name: &str) -> String
 
 #[cfg(test)]
 mod tests {
-    use super::{dev_keyring_service, migration_marker_name};
+    use super::{dev_keyring_service, is_valid_flavor, migration_marker_name, release_keyring_service};
+
+    #[test]
+    fn flavored_release_build_uses_its_own_service() {
+        assert_eq!(release_keyring_service(None), "buzz-desktop");
+        assert_eq!(release_keyring_service(Some("rooh")), "buzz-desktop.rooh");
+        assert_eq!(
+            migration_marker_name("buzz-desktop.rooh", "identity.migrated"),
+            "identity.buzz-desktop.rooh.migrated"
+        );
+    }
+
+    #[test]
+    fn only_simple_flavors_are_honored() {
+        assert!(is_valid_flavor("rooh"));
+        assert!(is_valid_flavor("team-2"));
+        assert!(!is_valid_flavor(""));
+        assert!(!is_valid_flavor("Rooh"));
+        assert!(!is_valid_flavor("../x"));
+        assert!(!is_valid_flavor(&"a".repeat(33)));
+    }
 
     #[test]
     fn standalone_scope_must_remain_under_dev_service() {
