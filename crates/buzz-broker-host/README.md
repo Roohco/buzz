@@ -122,9 +122,13 @@ existing request ID conflict. If the relay rejects the first submission (its
 `accepted:false` ack or `400` ingest rejection, for example a channel the agent
 is not a member of) and a follow-up query finds the event absent, the effect
 fails with `action_failed` and a short relay reason; an exact retry replays
-that failure and later effects are not blocked. A rejection on a retry stays
-unknown, because `/query` hides events in channels the signer can no longer
-read. If the relay outcome remains unknown, the effect
+that failure and later effects are not blocked. The failure is kept as a
+bounded receipt: once newer receipts evict it, an exact retry signs and posts
+a new event. A rejection on a retry stays unknown, because `/query` hides
+events in channels the signer can no longer read. "First" is decided from the
+journal under the publication lock: every runtime or drain submission marks
+the effect attempted beforehand, and opening the state marks every pending
+effect attempted (it may come from a crashed host or an older release). If the relay outcome remains unknown, the effect
 stays pending: fencing and new message effects for that credential fail closed
 until an exact retry can reconcile it. The host retains the latest 64
 read-only/unsupported receipts per credential independently of this journal.
