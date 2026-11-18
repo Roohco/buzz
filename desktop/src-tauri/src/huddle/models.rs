@@ -601,11 +601,16 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
-    /// Create a new `ModelManager` rooted at `~/.buzz/models/`.
+    /// Create a new `ModelManager` rooted at `~/.buzz/models/`
+    /// (`~/.buzz-<flavor>/models/` for a flavored build).
     ///
     /// Returns `None` if the home directory cannot be resolved.
     pub fn new() -> Option<Self> {
-        let models_dir = dirs::home_dir()?.join(".buzz").join("models");
+        let nest = match crate::app_state::build_flavor() {
+            Some(flavor) => format!(".buzz-{flavor}"),
+            None => ".buzz".to_string(),
+        };
+        let models_dir = dirs::home_dir()?.join(nest).join("models");
         let manager = Self {
             models_dir,
             stt: ModelSlot::new(STT_MODEL_DIR_NAME, STT_EXPECTED_FILES, STT_MODEL_VERSION),

@@ -19,11 +19,16 @@ The flavored build changes, at build time only:
 | Agent nest | `~/.buzz` | `~/.buzz-rooh` |
 | Deep-link scheme | `buzz://` | `buzz-rooh://` |
 | Updater | (release config) | disabled (no endpoints) |
+| `~/.local/bin/buzz` CLI link | set | not touched |
+| Speech models | `~/.buzz/models` | `~/.buzz-rooh/models` |
 
 Rooh agents run server-side behind the broker, so this build ships with stub
 sidecars and does not run local agents.
 
 ## Build (macOS, Apple Silicon)
+
+Do not set `BUZZ_UPDATER_PUBLIC_KEY` / `BUZZ_UPDATER_ENDPOINT` for this build:
+they compile the updater in and would point it at stock releases.
 
 ```bash
 . ./bin/activate-hermit
