@@ -89,10 +89,14 @@ pub struct ChannelReadArgs {
     /// Every target must be a signed kind-9 message in `channelId`, or the
     /// host refuses the whole read: permission to read a channel never
     /// reaches reactions to events outside it. A reaction is returned only
-    /// when its last `e` tag (the reacted-to event, per NIP-25) is a target.
-    /// Excludes `rootEventId`, `mentionsOnly` and `cursor`. Such a page never
-    /// carries a cursor, so a full page may be truncated (newest first); the
-    /// caller narrows the targets to see the rest.
+    /// when its reacted-to event (per NIP-25 and the relay, its last `e` tag
+    /// holding 64 hex characters) is a target. Excludes `rootEventId`,
+    /// `mentionsOnly` and `cursor`. The page holds the newest matching
+    /// reactions up to the limit (at most 16), ordered oldest first by
+    /// `created_at`, then id. It never carries a cursor, so a full page may
+    /// leave older reactions out; the caller narrows the targets to see them.
+    /// When too many reactions to other events crowd the relay, the host
+    /// refuses the read rather than return a page that may miss some.
     #[serde(
         default,
         deserialize_with = "absent_or_valued_hex64_list",

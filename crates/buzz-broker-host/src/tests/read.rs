@@ -372,15 +372,44 @@ async fn channel_query_uses_host_nip98_and_returns_verified_channel_event() {
 
 const OTHER_CHANNEL_ID: &str = "0b7f1c52-3a8e-4d55-9f0e-6f2d8a1c4b90";
 
-fn reaction(keys: &Keys, e_tags: &[nostr::EventId], emoji: &str) -> Event {
+fn reaction_at(keys: &Keys, e_tags: &[&str], emoji: &str, created_at: u64) -> Event {
     EventBuilder::new(Kind::Custom(7), emoji)
-        .tags(
-            e_tags
-                .iter()
-                .map(|id| Tag::parse(["e", &id.to_hex()]).unwrap()),
-        )
+        .tags(e_tags.iter().map(|id| Tag::parse(["e", id]).unwrap()))
+        .custom_created_at(nostr::Timestamp::from(created_at))
         .sign_with_keys(keys)
         .unwrap()
+}
+
+/// The relay's page order and cursor: `created_at DESC, id ASC`, continued
+/// below `(until, before_id)`. Rows are served whatever their `#e`, so the
+/// host's own checks are what is under test.
+fn relay_page(rows: &[serde_json::Value], filter: &serde_json::Value) -> Vec<serde_json::Value> {
+    let key = |row: &serde_json::Value| {
+        (
+            row["created_at"].as_u64().unwrap(),
+            row["id"].as_str().unwrap().to_owned(),
+        )
+    };
+    let mut rows: Vec<_> = rows
+        .iter()
+        .filter(
+            |row| match (filter["until"].as_u64(), filter["before_id"].as_str()) {
+                (Some(until), Some(before_id)) => {
+                    let (created_at, id) = key(row);
+                    created_at < until || (created_at == until && id.as_str() > before_id)
+                }
+                _ => true,
+            },
+        )
+        .cloned()
+        .collect();
+    rows.sort_by(|left, right| {
+        let (left_at, left_id) = key(left);
+        let (right_at, right_id) = key(right);
+        right_at.cmp(&left_at).then_with(|| left_id.cmp(&right_id))
+    });
+    rows.truncate(filter["limit"].as_u64().unwrap() as usize);
+    rows
 }
 
 #[tokio::test]
@@ -410,26 +439,37 @@ async fn reactions_read_requires_channel_targets_and_verified_last_e_tag() {
     let second = message(CHANNEL_ID, "second QA result");
     let foreign = message(OTHER_CHANNEL_ID, "foreign result");
     let elsewhere = message(CHANNEL_ID, "a message nobody asked about");
+    let (result_hex, second_hex, elsewhere_hex) = (
+        result.id.to_hex(),
+        second.id.to_hex(),
+        elsewhere.id.to_hex(),
+    );
+    let t0 = 1_700_000_000;
 
-    let verdict = reaction(&reviewer, &[result.id], "✅");
+    let verdict = reaction_at(&reviewer, &[&result_hex], "✅", t0 + 2);
     // NIP-25: the last `e` tag is the reacted-to event, earlier ones are context.
-    let with_context = reaction(&reviewer, &[elsewhere.id, second.id], "🔁");
-    let to_other_event = reaction(&reviewer, &[result.id, elsewhere.id], "❌");
-    let mut forged = serde_json::to_value(reaction(&reviewer, &[result.id], "✅")).unwrap();
+    let with_context = reaction_at(&reviewer, &[&elsewhere_hex, &second_hex], "🔁", t0 + 1);
+    let to_other_event = reaction_at(&reviewer, &[&result_hex, &elsewhere_hex], "❌", t0 + 3);
+    // The relay's rule skips an `e` tag that is not 64 hex, so this reacts to
+    // the result.
+    let junk_tail = reaction_at(&reviewer, &[&result_hex, "junk"], "✅", t0);
+    let mut forged =
+        serde_json::to_value(reaction_at(&reviewer, &[&result_hex], "✅", t0)).unwrap();
     forged["content"] = serde_json::json!("❌");
 
     let channel_events = vec![result.clone(), second.clone(), foreign.clone()];
-    let reactions = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([
-        verdict,
-        with_context,
-        to_other_event
-    ])));
-    let served = reactions.clone();
+    let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let set_rows = |events: Vec<serde_json::Value>| *rows.lock().unwrap() = events;
+    let json = |event: &Event| serde_json::to_value(event).unwrap();
+    let served = rows.clone();
+    let reaction_queries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = reaction_queries.clone();
     let app = Router::new().route(
         "/query",
         post(move |body: Bytes| {
             let channel_events = channel_events.clone();
             let served = served.clone();
+            let counted = counted.clone();
             async move {
                 let filters: serde_json::Value = serde_json::from_slice(&body).unwrap();
                 let filter = &filters[0];
@@ -447,7 +487,9 @@ async fn reactions_read_requires_channel_targets_and_verified_last_e_tag() {
                 assert_eq!(filter["kinds"], serde_json::json!([7]));
                 assert!(filter.get("#h").is_none(), "reactions carry no h tag");
                 assert!(filter["#e"].is_array());
-                axum::Json(served.lock().unwrap().clone()).into_response()
+                assert_eq!(filter["limit"], 16);
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                axum::Json(relay_page(&served.lock().unwrap(), filter)).into_response()
             }
         }),
     );
@@ -460,13 +502,23 @@ async fn reactions_read_requires_channel_targets_and_verified_last_e_tag() {
         reactions_to: Some(targets.iter().map(|id| id.to_hex()).collect()),
         ..ChannelReadArgs::default()
     };
+    let ids = |page: &buzz_sdk::broker::MessagePage| -> Vec<nostr::EventId> {
+        page.messages.iter().map(|m| m.0.id).collect()
+    };
 
+    // Kept reactions come back oldest first; the reaction to another event
+    // is dropped.
+    set_rows(vec![
+        json(&verdict),
+        json(&with_context),
+        json(&to_other_event),
+        json(&junk_tail),
+    ]);
     let page = publisher
         .query_channel(&signer, &relay, &read(vec![result.id, second.id]))
         .await
         .expect("reactions to channel messages");
-    let ids: Vec<_> = page.messages.iter().map(|m| m.0.id).collect();
-    assert_eq!(ids, vec![verdict.id, with_context.id]);
+    assert_eq!(ids(&page), vec![junk_tail.id, with_context.id, verdict.id]);
     assert!(page.next_cursor.is_none());
 
     for (what, targets) in [
@@ -484,14 +536,86 @@ async fn reactions_read_requires_channel_targets_and_verified_last_e_tag() {
         );
     }
 
-    *reactions.lock().unwrap() = serde_json::json!([verdict, forged]);
+    // A full relay page of reactions to another event does not push the
+    // verdict out: the host pages on to the older relay page.
+    let decoys: Vec<_> = (0..16)
+        .map(|n| {
+            json(&reaction_at(
+                &reviewer,
+                &[&result_hex, &elsewhere_hex],
+                "❌",
+                t0 + 10 + n,
+            ))
+        })
+        .collect();
+    let mut with_verdict = decoys.clone();
+    with_verdict.push(json(&verdict));
+    set_rows(with_verdict);
+    reaction_queries.store(0, std::sync::atomic::Ordering::SeqCst);
+    let page = publisher
+        .query_channel(&signer, &relay, &read(vec![result.id]))
+        .await
+        .expect("paged reactions");
+    assert_eq!(ids(&page), vec![verdict.id]);
+    assert_eq!(
+        reaction_queries.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "two non-empty relay pages, then an empty one proves the end"
+    );
+
+    // The page is held to the caller's limit, keeping the newest.
+    let kept: Vec<_> = (0..3)
+        .map(|n| reaction_at(&reviewer, &[&result_hex], "✅", t0 + 40 + n))
+        .collect();
+    set_rows(kept.iter().map(json).collect());
+    let page = publisher
+        .query_channel(
+            &signer,
+            &relay,
+            &ChannelReadArgs {
+                limit: Some(2),
+                ..read(vec![result.id])
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ids(&page), vec![kept[1].id, kept[2].id]);
+
+    // Past the relay page cap with pages still coming, the read fails rather
+    // than return a page that may be missing reactions.
+    let flood: Vec<_> = (0..64)
+        .map(|n| {
+            json(&reaction_at(
+                &reviewer,
+                &[&result_hex, &elsewhere_hex],
+                "❌",
+                t0 + 100 + n,
+            ))
+        })
+        .collect();
+    let mut flooded = flood.clone();
+    flooded.push(json(&verdict));
+    set_rows(flooded);
+    assert!(matches!(
+        publisher
+            .query_channel(&signer, &relay, &read(vec![result.id]))
+            .await,
+        Err(crate::publisher::PublishError::TooManyReactions)
+    ));
+
+    set_rows(vec![json(&verdict), forged]);
     assert!(matches!(
         publisher
             .query_channel(&signer, &relay, &read(vec![result.id]))
             .await,
         Err(crate::publisher::PublishError::InvalidEvent)
     ));
-    *reactions.lock().unwrap() = serde_json::json!([reaction(&reviewer, &[elsewhere.id], "✅")]);
+    set_rows(vec![json(&reaction_at(
+        &reviewer,
+        &[&elsewhere_hex],
+        "✅",
+        t0,
+    ))]);
     assert!(
         matches!(
             publisher
@@ -501,7 +625,7 @@ async fn reactions_read_requires_channel_targets_and_verified_last_e_tag() {
         ),
         "a reaction naming no target is a relay fault"
     );
-    *reactions.lock().unwrap() = serde_json::json!([elsewhere]);
+    set_rows(vec![json(&elsewhere)]);
     assert!(
         matches!(
             publisher
