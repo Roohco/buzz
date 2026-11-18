@@ -25,6 +25,7 @@ mod lifecycle;
 mod peer;
 mod read;
 mod receipts;
+mod rejection;
 mod reply;
 mod storage;
 

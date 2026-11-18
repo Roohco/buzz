@@ -80,7 +80,7 @@ The Buzz message presents a short human-readable summary, input revision, domain
 
 Provision one private channel, one human owner and one agent identity. Issue a broker credential for the exact logical agent/task/generation, configure one explicit channel and owner-only response. The owner posts a signed task mention. The agent reads it through the broker and posts one signed reply to the exact event. Quiesce admission, drain outstanding effects and fence before replacement. A successor starts only after the previous effect is terminal or explicitly reconciled.
 
-Do not infer a successful effect from a local signer result. Verify relay acceptance, retrievability and exact signed event identity. A relay outage after signing can leave an unresolved pending effect; the broker deliberately blocks a successor until reconciliation.
+Do not infer a successful effect from a local signer result. Verify relay acceptance, retrievability and exact signed event identity. A relay outage after signing can leave an unresolved pending effect; the broker deliberately blocks a successor until reconciliation. A relay rejection of the first submission, with the event then proved absent, is terminal (`failed`) and does not block later effects.
 
 ### 4.2 QA evidence projection
 

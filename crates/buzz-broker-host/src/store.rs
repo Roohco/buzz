@@ -919,16 +919,22 @@ impl AuthorityStore {
                 true,
             ));
         }
-        let old_receipt: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM broker_receipts WHERE credential_hash = ? AND request_id = ?)",
+        // A receipt under this requestId is either another action (digest
+        // differs: conflict) or this exact effect after the relay rejected it.
+        match load_receipt(
+            &mut transaction,
+            credential,
+            request.request_id(),
+            &request_digest,
+            None,
         )
-        .bind(credential.as_bytes())
-        .bind(request.request_id())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|_| StoreError::Unavailable)?;
-        if old_receipt {
-            return Ok(EffectAdmission::Conflict);
+        .await?
+        {
+            ReceiptMatch::Missing => {}
+            ReceiptMatch::Replay(response) => return Ok(EffectAdmission::Completed(*response)),
+            ReceiptMatch::Conflict | ReceiptMatch::OwnerChanged => {
+                return Ok(EffectAdmission::Conflict)
+            }
         }
         let pending_effect: bool = sqlx::query_scalar(
             "SELECT EXISTS(
@@ -1053,6 +1059,85 @@ impl AuthorityStore {
         .execute(&mut *transaction)
         .await
         .map_err(|_| StoreError::Unavailable)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        Ok(response)
+    }
+
+    /// Resolve a pending message effect the relay definitively rejected.
+    ///
+    /// The caller has proved the exact signed event absent after the
+    /// rejection. The effect row leaves the journal, so it no longer blocks
+    /// later effects or fence, and its failed response becomes this
+    /// requestId's receipt: an exact retry replays the same failure. Keeping
+    /// the effect journal success-only keeps the previous release able to open
+    /// this state.
+    #[cfg(unix)]
+    pub(crate) async fn fail_message_effect(
+        &self,
+        credential: &CredentialDigest,
+        request_id: &str,
+        event_id: &str,
+        error: BrokerError,
+    ) -> Result<BrokerResponse, StoreError> {
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        let mut transaction = connection
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        load_authority(&mut transaction, credential).await?;
+        let row = sqlx::query(
+            "SELECT request_digest, event_json, response_json FROM broker_effects
+             WHERE credential_hash = ? AND request_id = ?",
+        )
+        .bind(credential.as_bytes())
+        .bind(request_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| StoreError::Unavailable)?
+        .ok_or(StoreError::Conflict)?;
+        let event_json: String = row
+            .try_get("event_json")
+            .map_err(|_| StoreError::Integrity)?;
+        if decode_effect_event(&event_json)?.id.to_hex() != event_id {
+            return Err(StoreError::Conflict);
+        }
+        let response_json: Option<String> = row
+            .try_get("response_json")
+            .map_err(|_| StoreError::Integrity)?;
+        if let Some(response_json) = response_json {
+            return serde_json::from_str(&response_json).map_err(|_| StoreError::Integrity);
+        }
+        let request_digest: Vec<u8> = row
+            .try_get("request_digest")
+            .map_err(|_| StoreError::Integrity)?;
+        let response = BrokerResponse::new(request_id, BrokerResult::failed(error));
+        let response_json = serde_json::to_string(&response).map_err(|_| StoreError::Integrity)?;
+        sqlx::query("DELETE FROM broker_effects WHERE credential_hash = ? AND request_id = ?")
+            .bind(credential.as_bytes())
+            .bind(request_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        sqlx::query(
+            "INSERT INTO broker_receipts
+             (credential_hash, request_id, request_digest, response_json, owner_pubkey)
+             VALUES (?, ?, ?, ?, NULL)",
+        )
+        .bind(credential.as_bytes())
+        .bind(request_id)
+        .bind(request_digest)
+        .bind(response_json)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| StoreError::Conflict)?;
+        prune_receipts(&mut transaction, credential).await?;
         transaction
             .commit()
             .await
