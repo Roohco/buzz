@@ -256,6 +256,13 @@ jobs:
         run: cargo test -p buzz-broker-host --test real_relay_e2e r5_peer::r5_scoped_peer_handoff_against_real_relay -- --ignored --exact --nocapture
         env:
           RELAY_URL: ws://localhost:3000
+      - name: Channel reactions read proof
+        # Reactions have no h tag: the broker scopes them through their kind-9
+        # targets, refuses a target in another channel, and a NIP-09 deletion
+        # drops the reaction from the read.
+        run: cargo test -p buzz-broker-host --test real_relay_e2e reactions::channel_read_reactions_against_real_relay -- --ignored --exact --nocapture
+        env:
+          RELAY_URL: ws://localhost:3000
       - name: Build keyless ACP binaries
         run: cargo build -p buzz-acp -p buzz-cli
       - name: Managed ACP liveness proof

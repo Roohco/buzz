@@ -72,6 +72,7 @@ fn action_fixtures() -> Vec<ActionArgs> {
             mentions_only: true,
             cursor: Some("opaque-host-cursor-v1".into()),
             limit: Some(50),
+            reactions_to: None,
         }),
         ActionArgs::MessagePost(MessagePostArgs {
             channel_id: CHANNEL.into(),
@@ -3287,4 +3288,90 @@ fn bytes_carrying_more_than_the_contract_declares_never_reach_a_caller_as_ok() {
             "{what}: must not reach the caller as Ok"
         );
     }
+}
+
+/// `reactionsTo` is a separate read scope: bounded, deduplicated hex ids that
+/// never combine with the thread, mention or cursor scopes.
+#[test]
+fn reactions_to_is_bounded_deduplicated_and_exclusive() {
+    let target = |n: usize| format!("{n:064x}");
+    let read = |mutate: &dyn Fn(&mut ChannelReadArgs)| {
+        let mut args = ChannelReadArgs::channel(CHANNEL);
+        mutate(&mut args);
+        args.validated()
+    };
+
+    let upper = EVENT.to_ascii_uppercase();
+    let normalized = read(&|a| a.reactions_to = Some(vec![upper.clone(), EVENT.into()]))
+        .expect("duplicates collapse after lowercasing");
+    assert_eq!(normalized.reactions_to, Some(vec![EVENT.to_owned()]));
+
+    let max: Vec<String> = (0..actions::MAX_REACTION_TARGETS).map(target).collect();
+    assert!(read(&|a| a.reactions_to = Some(max.clone())).is_ok());
+    let mut over = max.clone();
+    over.push(target(actions::MAX_REACTION_TARGETS));
+    assert!(read(&|a| a.reactions_to = Some(over.clone())).is_err());
+    let mut padded = max.clone();
+    padded.push(max[0].clone());
+    assert!(
+        read(&|a| a.reactions_to = Some(padded.clone())).is_ok(),
+        "a duplicate does not count against the cap"
+    );
+    assert!(read(&|a| a.reactions_to = Some(Vec::new())).is_err());
+    assert!(read(&|a| a.reactions_to = Some(vec!["nothex".into()])).is_err());
+    assert!(read(&|a| a.reactions_to = Some(vec![EVENT[..63].into()])).is_err());
+
+    let with_targets = |a: &mut ChannelReadArgs| a.reactions_to = Some(vec![EVENT.into()]);
+    assert!(read(&|a| {
+        with_targets(a);
+        a.root_event_id = Some(EVENT.into());
+    })
+    .is_err());
+    assert!(read(&|a| {
+        with_targets(a);
+        a.mentions_only = true;
+    })
+    .is_err());
+    assert!(read(&|a| {
+        with_targets(a);
+        a.cursor = Some("opaque".into());
+    })
+    .is_err());
+
+    // Wire form: camelCase, null rejected, malformed ids rejected at parse.
+    let parsed: ChannelReadArgs =
+        serde_json::from_value(serde_json::json!({ "channelId": CHANNEL, "reactionsTo": [upper] }))
+            .unwrap();
+    assert_eq!(parsed.reactions_to, Some(vec![EVENT.to_owned()]));
+    assert_eq!(
+        serde_json::to_value(&parsed).unwrap()["reactionsTo"],
+        serde_json::json!([EVENT])
+    );
+    assert!(
+        serde_json::to_value(ChannelReadArgs::channel(CHANNEL))
+            .unwrap()
+            .get("reactionsTo")
+            .is_none(),
+        "absent stays absent on the wire"
+    );
+    for rejected in [
+        serde_json::json!({ "channelId": CHANNEL, "reactionsTo": null }),
+        serde_json::json!({ "channelId": CHANNEL, "reactionsTo": ["nothex"] }),
+        serde_json::json!({ "channelId": CHANNEL, "reactionsTo": EVENT }),
+        serde_json::json!({ "channelId": CHANNEL, "reactions_to": [EVENT] }),
+    ] {
+        assert!(
+            serde_json::from_value::<ChannelReadArgs>(rejected.clone()).is_err(),
+            "must reject: {rejected}"
+        );
+    }
+    let combined = BrokerRequest::new(
+        "read-reactions-combined",
+        ActionArgs::ChannelRead(ChannelReadArgs {
+            mentions_only: true,
+            reactions_to: Some(vec![EVENT.into()]),
+            ..ChannelReadArgs::channel(CHANNEL)
+        }),
+    );
+    assert!(combined.is_err(), "the request door applies the same rule");
 }

@@ -6,11 +6,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    absent_or_valued, absent_or_valued_hex64, channel, channel_id, content, cursor, event_id,
-    hex64_field, is_false, limit, mentions, optional, required, respond_to, validate_slug, Action,
-    PubkeyHex, DEFAULT_PAGE_LIMIT, MAX_ABOUT_CHARS, MAX_EMOJI_CHARS, MAX_NAME_CHARS,
-    MAX_OBSERVER_BATCH_BYTES, MAX_OBSERVER_FRAMES, MAX_OBSERVER_FRAME_BYTES, MAX_PROMPT_CHARS,
-    MAX_SCALAR_CHARS,
+    absent_or_valued, absent_or_valued_hex64, absent_or_valued_hex64_list, channel, channel_id,
+    content, cursor, event_id, hex64_field, is_false, limit, mentions, optional, required,
+    respond_to, validate_slug, Action, PubkeyHex, DEFAULT_PAGE_LIMIT, MAX_ABOUT_CHARS,
+    MAX_EMOJI_CHARS, MAX_NAME_CHARS, MAX_OBSERVER_BATCH_BYTES, MAX_OBSERVER_FRAMES,
+    MAX_OBSERVER_FRAME_BYTES, MAX_PROMPT_CHARS, MAX_REACTION_TARGETS, MAX_SCALAR_CHARS,
 };
 use crate::SdkError;
 use buzz_core::{
@@ -83,6 +83,22 @@ pub struct ChannelReadArgs {
         skip_serializing_if = "Option::is_none"
     )]
     pub limit: Option<u32>,
+    /// Read the NIP-25 reactions (kind 7) to these messages instead of the
+    /// channel's messages: 1 to [`MAX_REACTION_TARGETS`] distinct event ids.
+    ///
+    /// Every target must be a signed kind-9 message in `channelId`, or the
+    /// host refuses the whole read: permission to read a channel never
+    /// reaches reactions to events outside it. A reaction is returned only
+    /// when its last `e` tag (the reacted-to event, per NIP-25) is a target.
+    /// Excludes `rootEventId`, `mentionsOnly` and `cursor`. Such a page never
+    /// carries a cursor, so a full page may be truncated (newest first); the
+    /// caller narrows the targets to see the rest.
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued_hex64_list",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reactions_to: Option<Vec<String>>,
 }
 
 impl ChannelReadArgs {
@@ -108,9 +124,36 @@ impl ChannelReadArgs {
     /// # Errors
     ///
     /// Returns [`SdkError::InvalidInput`] for a malformed channel UUID, a
-    /// malformed root event id, an over-long or non-printable cursor, or an
-    /// out-of-range limit.
+    /// malformed root event id, an over-long or non-printable cursor, an
+    /// out-of-range limit, or a `reactionsTo` list that is empty, holds a
+    /// malformed id or more than [`MAX_REACTION_TARGETS`] distinct ids, or is
+    /// combined with `rootEventId`, `mentionsOnly` or `cursor`.
     pub fn validated(&self) -> Result<Self, SdkError> {
+        let reactions_to = self
+            .reactions_to
+            .as_deref()
+            .map(|targets| {
+                if self.root_event_id.is_some() || self.mentions_only || self.cursor.is_some() {
+                    return Err(SdkError::InvalidInput(
+                        "reactionsTo excludes rootEventId, mentionsOnly and cursor".into(),
+                    ));
+                }
+                let mut unique: Vec<String> = Vec::with_capacity(targets.len());
+                for target in targets {
+                    let target = event_id(target, "reactionsTo")?;
+                    if !unique.contains(&target) {
+                        unique.push(target);
+                    }
+                }
+                if unique.is_empty() || unique.len() > MAX_REACTION_TARGETS {
+                    return Err(SdkError::InvalidInput(format!(
+                        "reactionsTo must name 1 to {MAX_REACTION_TARGETS} distinct events (got {})",
+                        unique.len()
+                    )));
+                }
+                Ok(unique)
+            })
+            .transpose()?;
         Ok(Self {
             channel_id: channel(&self.channel_id)?,
             root_event_id: self
@@ -121,6 +164,7 @@ impl ChannelReadArgs {
             mentions_only: self.mentions_only,
             cursor: self.cursor.as_deref().map(cursor).transpose()?,
             limit: limit(self.limit)?,
+            reactions_to,
         })
     }
 }

@@ -369,3 +369,147 @@ async fn channel_query_uses_host_nip98_and_returns_verified_channel_event() {
     wrong_host.abort();
     rotated_host.abort();
 }
+
+const OTHER_CHANNEL_ID: &str = "0b7f1c52-3a8e-4d55-9f0e-6f2d8a1c4b90";
+
+fn reaction(keys: &Keys, e_tags: &[nostr::EventId], emoji: &str) -> Event {
+    EventBuilder::new(Kind::Custom(7), emoji)
+        .tags(
+            e_tags
+                .iter()
+                .map(|id| Tag::parse(["e", &id.to_hex()]).unwrap()),
+        )
+        .sign_with_keys(keys)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn reactions_read_requires_channel_targets_and_verified_last_e_tag() {
+    let fixture = Fixture::new();
+    let agent = Keys::generate();
+    let owner = Keys::generate();
+    let reviewer = Keys::generate();
+    let key_path = fixture.directory.path().join("agent.key");
+    let tag_path = fixture.directory.path().join("owner.auth-tag");
+    std::fs::write(&key_path, agent.secret_key().to_secret_hex()).unwrap();
+    let auth_tag =
+        buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), "kind=9").unwrap();
+    std::fs::write(&tag_path, &auth_tag).unwrap();
+    for path in [&key_path, &tag_path] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let signer = HostSigner::load(&key_path, &tag_path).unwrap();
+
+    let message = |channel: &str, content: &str| {
+        EventBuilder::new(Kind::Custom(9), content)
+            .tags([Tag::parse(["h", channel]).unwrap()])
+            .sign_with_keys(&agent)
+            .unwrap()
+    };
+    let result = message(CHANNEL_ID, "QA result");
+    let second = message(CHANNEL_ID, "second QA result");
+    let foreign = message(OTHER_CHANNEL_ID, "foreign result");
+    let elsewhere = message(CHANNEL_ID, "a message nobody asked about");
+
+    let verdict = reaction(&reviewer, &[result.id], "✅");
+    // NIP-25: the last `e` tag is the reacted-to event, earlier ones are context.
+    let with_context = reaction(&reviewer, &[elsewhere.id, second.id], "🔁");
+    let to_other_event = reaction(&reviewer, &[result.id, elsewhere.id], "❌");
+    let mut forged = serde_json::to_value(reaction(&reviewer, &[result.id], "✅")).unwrap();
+    forged["content"] = serde_json::json!("❌");
+
+    let channel_events = vec![result.clone(), second.clone(), foreign.clone()];
+    let reactions = std::sync::Arc::new(std::sync::Mutex::new(serde_json::json!([
+        verdict,
+        with_context,
+        to_other_event
+    ])));
+    let served = reactions.clone();
+    let app = Router::new().route(
+        "/query",
+        post(move |body: Bytes| {
+            let channel_events = channel_events.clone();
+            let served = served.clone();
+            async move {
+                let filters: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let filter = &filters[0];
+                if filter["kinds"] == serde_json::json!([9]) {
+                    assert_eq!(filter["#h"], serde_json::json!([CHANNEL_ID]));
+                    // Ignore `#h` on purpose: the host must not trust the relay
+                    // to have scoped the targets to the channel.
+                    let ids = filter["ids"].as_array().unwrap();
+                    let found: Vec<_> = channel_events
+                        .iter()
+                        .filter(|event| ids.contains(&serde_json::json!(event.id.to_hex())))
+                        .collect();
+                    return axum::Json(serde_json::json!(found)).into_response();
+                }
+                assert_eq!(filter["kinds"], serde_json::json!([7]));
+                assert!(filter.get("#h").is_none(), "reactions carry no h tag");
+                assert!(filter["#e"].is_array());
+                axum::Json(served.lock().unwrap().clone()).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay = format!("ws://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let publisher = RelayPublisher::new().unwrap();
+    let read = |targets: Vec<nostr::EventId>| ChannelReadArgs {
+        channel_id: CHANNEL_ID.into(),
+        reactions_to: Some(targets.iter().map(|id| id.to_hex()).collect()),
+        ..ChannelReadArgs::default()
+    };
+
+    let page = publisher
+        .query_channel(&signer, &relay, &read(vec![result.id, second.id]))
+        .await
+        .expect("reactions to channel messages");
+    let ids: Vec<_> = page.messages.iter().map(|m| m.0.id).collect();
+    assert_eq!(ids, vec![verdict.id, with_context.id]);
+    assert!(page.next_cursor.is_none());
+
+    for (what, targets) in [
+        ("unknown target", vec![result.id, elsewhere.id]),
+        ("foreign-channel target", vec![result.id, foreign.id]),
+    ] {
+        assert!(
+            matches!(
+                publisher
+                    .query_channel(&signer, &relay, &read(targets))
+                    .await,
+                Err(crate::publisher::PublishError::TargetOutsideChannel)
+            ),
+            "{what} refuses the whole read"
+        );
+    }
+
+    *reactions.lock().unwrap() = serde_json::json!([verdict, forged]);
+    assert!(matches!(
+        publisher
+            .query_channel(&signer, &relay, &read(vec![result.id]))
+            .await,
+        Err(crate::publisher::PublishError::InvalidEvent)
+    ));
+    *reactions.lock().unwrap() = serde_json::json!([reaction(&reviewer, &[elsewhere.id], "✅")]);
+    assert!(
+        matches!(
+            publisher
+                .query_channel(&signer, &relay, &read(vec![result.id]))
+                .await,
+            Err(crate::publisher::PublishError::InvalidEvent)
+        ),
+        "a reaction naming no target is a relay fault"
+    );
+    *reactions.lock().unwrap() = serde_json::json!([elsewhere]);
+    assert!(
+        matches!(
+            publisher
+                .query_channel(&signer, &relay, &read(vec![result.id]))
+                .await,
+            Err(crate::publisher::PublishError::InvalidEvent)
+        ),
+        "only kind 7 is returned"
+    );
+    server.abort();
+}

@@ -142,6 +142,15 @@ async fn action(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
                     )),
                 ));
             }
+            Err(PublishError::TargetOutsideChannel) => {
+                return broker_response(BrokerResponse::new(
+                    request.request_id(),
+                    BrokerResult::failed(BrokerError::new(
+                        BrokerErrorCode::InvalidRequest,
+                        "reaction target is not a message in this channel",
+                    )),
+                ));
+            }
             Err(_) => {
                 return broker_response(BrokerResponse::new(
                     request.request_id(),

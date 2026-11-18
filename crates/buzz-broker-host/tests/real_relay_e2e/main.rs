@@ -27,6 +27,7 @@
 mod acp_liveness;
 mod n_minus_1;
 mod r5_peer;
+mod reactions;
 mod rollback;
 mod support;
 

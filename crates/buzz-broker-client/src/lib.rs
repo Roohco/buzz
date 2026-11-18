@@ -288,6 +288,7 @@ mod tests {
             mentions_only: false,
             cursor: None,
             limit: Some(100),
+            reactions_to: None,
         });
         BrokerRequest::new("req-read-1", args)
             .unwrap()
