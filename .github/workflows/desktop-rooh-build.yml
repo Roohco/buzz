@@ -58,6 +58,10 @@ jobs:
           APP="desktop/src-tauri/target/${TARGET}/release/bundle/macos/Buzz Rooh.app"
           test -d "$APP"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" | grep -qx co.rooh.buzz.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" = buzz-desktop
+          test -s "$APP/Contents/MacOS/buzz-desktop"
+          codesign --force --deep -s - "$APP"
+          codesign --verify --deep --strict "$APP"
           ditto -c -k --keepParent "$APP" buzz-rooh-macos-arm64.zip
           shasum -a 256 buzz-rooh-macos-arm64.zip | tee buzz-rooh-macos-arm64.zip.sha256
 

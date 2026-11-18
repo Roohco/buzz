@@ -1,7 +1,7 @@
 {
   "identifier": "co.rooh.buzz.desktop",
   "productName": "Buzz Rooh",
-  "mainBinaryName": "Buzz",
+  "mainBinaryName": "buzz-desktop",
   "plugins": {
     "updater": {
       "endpoints": []
