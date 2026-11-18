@@ -53,18 +53,19 @@ ignore = [
     # zip 8.6.0 via mesh-llm v0.76.2 (mesh-llm-host-runtime,
     # mesh-llm-plugin-manager, mesh-llm-system), only with --features mesh-llm.
     # mesh-llm builds zip with `deflate` only, reads archives through
-    # ZipArchive and copies entries by hand: it never calls extract(), never
+    # ZipArchive and copies entries by hand (its autoupdate unpacks downloaded
+    # archives via enclosed_name + io::copy): it never calls extract(), never
     # decrypts AES (`aes-crypto` off), never enables `legacy-zip`, never uses
     # ZipStreamReader. mesh-llm v0.79.0 ships zip 9.0.5 but drops mesh-llm-sdk's
     # `client` feature, so the bump needs an SDK migration. Remove on that bump.
     #
     # The direct desktop dependency (managed Node.js extraction) is zip 9.0.5.
-    { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
-    { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
-    { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
-    { id = "RUSTSEC-2026-0429", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
+    { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, --features mesh-llm only; no extract(): entries read via enclosed_name + io::copy)" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, --features mesh-llm only; no extract(): entries read via enclosed_name + io::copy)" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, --features mesh-llm only; no extract(): entries read via enclosed_name + io::copy)" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, --features mesh-llm only; no extract(): entries read via enclosed_name + io::copy)" },
     { id = "RUSTSEC-2026-0545", reason = "zip 4.6.1 (tauri-plugin-updater, unencrypted signed archives) and zip 8.6.0 (mesh-llm v0.76.2, aes-crypto off)" },
-    { id = "RUSTSEC-2026-0546", reason = "zip 8.6.0 via mesh-llm v0.76.2 only; never extracts; fixed in mesh-llm v0.79.0 (needs SDK migration)" },
+    { id = "RUSTSEC-2026-0546", reason = "zip 8.6.0 via mesh-llm v0.76.2 only (--features mesh-llm; no extract(), enclosed_name + io::copy); fixed in mesh-llm v0.79.0 (needs SDK migration)" },
     { id = "RUSTSEC-2026-0547", reason = "zip 8.6.0 via mesh-llm v0.76.2 only; legacy-zip feature off" },
     { id = "RUSTSEC-2026-0548", reason = "zip 4.6.1 (tauri-plugin-updater, ZipArchive only) and zip 8.6.0 (mesh-llm v0.76.2); no ZipStreamReader use" },
 
