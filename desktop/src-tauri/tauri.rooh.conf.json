@@ -11,5 +11,8 @@
         "schemes": ["buzz-rooh"]
       }
     }
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
   }
 }
