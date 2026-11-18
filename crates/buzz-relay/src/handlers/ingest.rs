@@ -715,6 +715,20 @@ pub(crate) fn is_job_handoff_kind(kind: u32) -> bool {
     )
 }
 
+/// Whether an event whose channel comes from its target (kind:7, kind:5 by
+/// `e`) may keep its `h` tags: it has none, or one of them is the target's
+/// channel UUID exactly as the relay writes it (lowercase, hyphenated), the
+/// same way `#h` filters match.
+fn h_tags_admit_target_channel(event: &Event, target_channel: Uuid) -> bool {
+    let target_channel = target_channel.to_string();
+    let mut h_tags = event
+        .tags
+        .iter()
+        .filter(|t| t.kind().to_string() == "h")
+        .peekable();
+    h_tags.peek().is_none() || h_tags.any(|t| t.content() == Some(target_channel.as_str()))
+}
+
 /// Kinds that require an `h` tag for channel scoping.
 pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
     is_job_handoff_kind(kind)
@@ -2724,6 +2738,26 @@ async fn ingest_event_inner(
         }
     }
 
+    // An event that takes its channel from its target is stored in that
+    // channel, but every read and fan-out matches its own `h` tags. One whose
+    // `h` names another channel would never be delivered, yet it would use a
+    // slot under the channel's history LIMIT, so a replay cut by the limit
+    // could look complete. Refuse it with the kind's not-found denial. This
+    // runs after the token, membership and archive gates: an earlier refusal
+    // would skip their reads, and its timing would show a sender who cannot
+    // read the target's channel whether a guessed `h` names it.
+    // Port of upstream block/buzz 4bf7d8a9b.
+    let target_not_found = match kind_u32 {
+        KIND_REACTION => Some("invalid: reaction target event not found"),
+        KIND_DELETION => Some("invalid: target event not found"),
+        _ => None,
+    };
+    if let (Some(denial), Some(target_channel)) = (target_not_found, channel_id) {
+        if !h_tags_admit_target_channel(&event, target_channel) {
+            return Err(IngestError::Rejected(denial.into()));
+        }
+    }
+
     // NIP-09: kind:5 may reference targets via `e` tag (regular events) OR
     // `a` tag (addressable/parameterized-replaceable events like kind:30620).
     if kind_u32 == KIND_NIP29_DELETE_EVENT || kind_u32 == KIND_DELETION {
@@ -3683,6 +3717,49 @@ mod tests {
                 "kind {kind} must not require an h tag"
             );
         }
+    }
+
+    /// A reaction or deletion is stored in its target's channel, so its `h`
+    /// tags are admitted only when absent or when one names that channel in the
+    /// relay's canonical form. Mutation: drop the "no h" arm or compare by
+    /// anything looser than the canonical string → RED.
+    #[test]
+    fn h_tags_must_name_the_target_channel() {
+        let keys = nostr::Keys::generate();
+        let (target, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let reaction = |h: &[String]| {
+            let mut tags = vec![nostr::Tag::parse(["e", &"a".repeat(64)]).unwrap()];
+            tags.extend(
+                h.iter()
+                    .map(|h| nostr::Tag::parse(["h", h.as_str()]).unwrap()),
+            );
+            EventBuilder::new(Kind::Custom(KIND_REACTION as u16), "+")
+                .tags(tags)
+                .sign_with_keys(&keys)
+                .expect("sign")
+        };
+
+        assert!(h_tags_admit_target_channel(&reaction(&[]), target));
+        assert!(h_tags_admit_target_channel(
+            &reaction(&[target.to_string()]),
+            target
+        ));
+        assert!(h_tags_admit_target_channel(
+            &reaction(&[other.to_string(), target.to_string()]),
+            target
+        ));
+        assert!(!h_tags_admit_target_channel(
+            &reaction(&[other.to_string()]),
+            target
+        ));
+        assert!(!h_tags_admit_target_channel(
+            &reaction(&[target.to_string().to_uppercase()]),
+            target
+        ));
+        assert!(!h_tags_admit_target_channel(
+            &reaction(&[target.simple().to_string()]),
+            target
+        ));
     }
 
     #[test]
