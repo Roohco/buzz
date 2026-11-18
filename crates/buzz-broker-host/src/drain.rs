@@ -16,6 +16,11 @@ pub(crate) async fn drain_pending(
         if !signer.matches_executor(identity) || !signer.matches_event_owner(&pending.event) {
             return Err(StoreError::InvalidIdentity.into());
         }
+        // Mark the submission before it happens, so a runtime request that
+        // later takes this lock never treats the event as first-sent.
+        store
+            .begin_publish_attempt(&pending.credential, &pending.request_id)
+            .await?;
         publisher
             .publish_pending(signer, &pending.relay_url, &pending.event)
             .await?;

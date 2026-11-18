@@ -148,6 +148,7 @@ impl AuthorityStore {
         // Additive peer tables keep the schema version, so the previous broker
         // release still opens this state on rollback.
         self.ensure_peer_tables().await?;
+        self.ensure_publish_attempted().await?;
         self.validate_authority_state().await?;
         self.validate_effect_state().await
     }
@@ -1064,6 +1065,102 @@ impl AuthorityStore {
             .await
             .map_err(|_| StoreError::Unavailable)?;
         Ok(response)
+    }
+
+    /// Add the effect journal's `publish_attempted` column without changing
+    /// the schema version, so the previous release still opens this state
+    /// (it names its insert columns, and the default fills this one).
+    ///
+    /// Every effect still pending when a store opens is marked attempted: a
+    /// crashed host, an older release or another process may have submitted
+    /// it, so it can never again count as a first submission.
+    #[cfg(unix)]
+    async fn ensure_publish_attempted(&self) -> Result<(), StoreError> {
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        let mut transaction = connection
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        let present: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_info('broker_effects')
+                WHERE name = 'publish_attempted'
+            )",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| StoreError::Unavailable)?;
+        if !present {
+            sqlx::query(
+                "ALTER TABLE broker_effects ADD COLUMN publish_attempted INTEGER NOT NULL
+                 DEFAULT 0 CHECK(publish_attempted IN (0, 1))",
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        }
+        sqlx::query(
+            "UPDATE broker_effects SET publish_attempted = 1
+             WHERE response_json IS NULL AND publish_attempted = 0",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| StoreError::Unavailable)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| StoreError::Unavailable)
+    }
+
+    /// Record that the pending effect's signed event is about to be sent to
+    /// the relay. Call it under the credential's publication lock, before
+    /// every submission. Returns whether this is the first submission ever:
+    /// only then can a relay rejection plus absence prove a terminal failure.
+    #[cfg(unix)]
+    pub(crate) async fn begin_publish_attempt(
+        &self,
+        credential: &CredentialDigest,
+        request_id: &str,
+    ) -> Result<bool, StoreError> {
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        let mut transaction = connection
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        let attempted: i64 = sqlx::query_scalar(
+            "SELECT publish_attempted FROM broker_effects
+             WHERE credential_hash = ? AND request_id = ? AND response_json IS NULL",
+        )
+        .bind(credential.as_bytes())
+        .bind(request_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| StoreError::Unavailable)?
+        .ok_or(StoreError::Conflict)?;
+        if attempted == 0 {
+            sqlx::query(
+                "UPDATE broker_effects SET publish_attempted = 1
+                 WHERE credential_hash = ? AND request_id = ?",
+            )
+            .bind(credential.as_bytes())
+            .bind(request_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|_| StoreError::Unavailable)?;
+        Ok(attempted == 0)
     }
 
     /// Resolve a pending message effect the relay definitively rejected.

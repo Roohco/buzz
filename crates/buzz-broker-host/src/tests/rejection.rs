@@ -345,6 +345,16 @@ async fn retries_of_a_journaled_effect_keep_a_rejection_unresolved() {
     else {
         panic!("effect journaled without publish");
     };
+    // Another holder of the publication lock (an identical request, drain)
+    // submitted the event first; its ack was lost.
+    assert!(store
+        .begin_publish_attempt(&credential, "journaled-then-rejected")
+        .await
+        .expect("first attempt recorded"));
+    assert!(!store
+        .begin_publish_attempt(&credential, "journaled-then-rejected")
+        .await
+        .expect("later attempt recorded"));
     let publisher = RelayPublisher::new().unwrap();
     assert!(matches!(
         publisher.publish_pending(&signer, &relay.url, &event).await,
@@ -386,5 +396,47 @@ async fn retries_of_a_journaled_effect_keep_a_rejection_unresolved() {
         Err(StoreError::EffectsPending)
     ));
     host_task.abort();
+    relay.task.abort();
+}
+
+/// An effect still pending when a store opens may have been submitted by a
+/// crashed host or an older release, so it never counts as first-sent; and
+/// the additive column keeps the schema version the previous release opens.
+#[tokio::test]
+async fn reopened_pending_effect_is_never_a_first_submission() {
+    let relay = FakeRelay::start(400, MEMBERSHIP, Query::Absent).await;
+    let mut fixture = Fixture::new();
+    let signer = bind_signer(&mut fixture, &relay.url);
+    let store = AuthorityStore::open(&fixture.state)
+        .await
+        .expect("store opens");
+    let bearer = fixture.issue(&store).await;
+    let credential =
+        crate::credential::CredentialDigest::from_bearer(&bearer).expect("issued credential");
+    let request = post_request("crashed-before-ack", "maybe sent");
+    let validated = serde_json::from_slice::<BrokerRequest>(request.body())
+        .unwrap()
+        .validated()
+        .unwrap();
+    store
+        .prepare_message_post(&credential, request.body(), &validated, &signer)
+        .await
+        .expect("effect journaled");
+    drop(store);
+    let reopened = AuthorityStore::open(&fixture.state)
+        .await
+        .expect("store reopens");
+    assert!(!reopened
+        .begin_publish_attempt(&credential, "crashed-before-ack")
+        .await
+        .expect("attempt recorded"));
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(&fixture.state);
+    let pool = sqlx::SqlitePool::connect_with(options).await.unwrap();
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 6, "schema version unchanged for rollback");
+    pool.close().await;
     relay.task.abort();
 }

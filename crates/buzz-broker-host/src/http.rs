@@ -246,7 +246,6 @@ impl EffectService {
         request: &ValidatedRequest,
     ) -> BrokerResponse {
         let mut publication_guard = None;
-        let mut was_pending_before_lock = false;
         let mut thread = None;
         let admission = loop {
             let prepared = match request.args() {
@@ -290,8 +289,7 @@ impl EffectService {
                         }
                     };
                 }
-                Ok(EffectAdmission::Pending(_, _, was_pending)) if publication_guard.is_none() => {
-                    was_pending_before_lock = was_pending;
+                Ok(EffectAdmission::Pending(..)) if publication_guard.is_none() => {
                     publication_guard =
                         match store.publication_lock_for_credential(credential).await {
                             Ok(guard) => Some(guard),
@@ -342,13 +340,23 @@ impl EffectService {
             ),
             EffectAdmission::Completed(response) => response.replayed(),
             EffectAdmission::Pending(event, relay_url, _) => {
-                let publication = if was_pending_before_lock {
+                // Decided under the publication lock from the journal: any
+                // earlier submission (another request, drain, a crashed host)
+                // makes this a retry whose rejection proves nothing.
+                let first_submission = match store
+                    .begin_publish_attempt(credential, request.request_id())
+                    .await
+                {
+                    Ok(first) => first,
+                    Err(_) => return internal_failure(request.request_id()),
+                };
+                let publication = if first_submission {
                     self.publisher
-                        .publish_pending(&self.signer, &relay_url, &event)
+                        .publish(&self.signer, &relay_url, &event)
                         .await
                 } else {
                     self.publisher
-                        .publish(&self.signer, &relay_url, &event)
+                        .publish_pending(&self.signer, &relay_url, &event)
                         .await
                 };
                 match publication {
