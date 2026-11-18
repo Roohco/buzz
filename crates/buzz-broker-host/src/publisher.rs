@@ -35,6 +35,8 @@ pub(crate) struct RelayPublisher {
 const MAX_READ_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_READ_PAGE_EVENTS: u32 = 16;
 const MAX_EXACT_EVENT_BYTES: usize = 1024 * 1024;
+/// Relay pages one `reactionsTo` read may scan to fill its page.
+const MAX_REACTION_RELAY_PAGES: usize = 4;
 
 #[derive(Deserialize)]
 struct RelayAck {
@@ -436,15 +438,17 @@ impl RelayPublisher {
         })
     }
 
-    /// One page of NIP-25 reactions (kind 7) to `targets`, newest first.
+    /// The newest page of NIP-25 reactions (kind 7) to `targets`, returned
+    /// oldest first.
     ///
     /// Every target is first proven to be a signed kind-9 message carrying
     /// exactly one `h` tag for the requested channel; otherwise the read is
     /// refused, because reactions in this relay carry no `h` tag and the
     /// target is the only thing tying them to the granted channel. A returned
     /// event must be a verified kind 7 with an `e` tag naming a target; one
-    /// whose last `e` tag (NIP-25's reacted-to event) is not a target reacts
-    /// to another event and is dropped. The relay soft-deletes a reaction on
+    /// whose reacted-to event (see [`reacted_to`]) is not a target is dropped.
+    /// Up to [`MAX_REACTION_RELAY_PAGES`] relay pages are read to fill the
+    /// page; past that the read fails rather than return a short page. The relay soft-deletes a reaction on
     /// a NIP-09 deletion and `/query` omits it, so no kind 5 is returned.
     async fn query_reactions(
         &self,
@@ -485,45 +489,85 @@ impl RelayPublisher {
             return Err(PublishError::TargetOutsideChannel);
         }
 
-        let relay_limit = args.effective_limit().min(MAX_READ_PAGE_EVENTS);
-        let body = self
-            .query_bytes(
-                signer,
-                community_relay_url,
-                &serde_json::json!({
-                    "kinds": [7],
-                    "#e": targets,
-                    "limit": relay_limit,
-                }),
-            )
-            .await?;
-        let reactions: Vec<BrokerMessage> =
-            serde_json::from_slice(&body).map_err(|_| PublishError::InvalidEvent)?;
-        if reactions.len() > relay_limit as usize {
-            return Err(PublishError::InvalidEvent);
-        }
-        let mut messages = Vec::with_capacity(reactions.len());
-        for reaction in reactions {
-            let referenced: Vec<&str> = reaction
-                .0
-                .tags
-                .iter()
-                .filter(|tag| tag.kind().to_string() == "e")
-                .filter_map(|tag| tag.content())
-                .collect();
-            if reaction.verify().is_err()
-                || reaction.0.kind.as_u16() != 7
-                || !referenced.iter().any(|id| targets.iter().any(|t| t == id))
-            {
+        // The relay applies LIMIT before it drops rows the caller cannot see,
+        // and the host drops reactions to other events after that, so one relay
+        // page can hold fewer kept reactions than exist. Page through the relay
+        // until the page is filled or the relay has nothing older.
+        let wanted = args.effective_limit().min(MAX_READ_PAGE_EVENTS) as usize;
+        let mut messages: Vec<BrokerMessage> = Vec::with_capacity(wanted);
+        let mut before: Option<JobPageCursor> = None;
+        let mut exhausted = false;
+        for _ in 0..MAX_REACTION_RELAY_PAGES {
+            let mut filter = serde_json::json!({
+                "kinds": [7],
+                "#e": targets,
+                "limit": MAX_READ_PAGE_EVENTS,
+            });
+            if let Some(cursor) = &before {
+                filter["until"] = serde_json::json!(cursor.created_at);
+                filter["before_id"] = serde_json::json!(cursor.event_id);
+            }
+            let body = self
+                .query_bytes(signer, community_relay_url, &filter)
+                .await?;
+            let reactions: Vec<BrokerMessage> =
+                serde_json::from_slice(&body).map_err(|_| PublishError::InvalidEvent)?;
+            if reactions.len() > MAX_READ_PAGE_EVENTS as usize {
                 return Err(PublishError::InvalidEvent);
             }
-            if referenced
-                .last()
-                .is_some_and(|id| targets.iter().any(|t| t == id))
-            {
-                messages.push(reaction);
+            // An empty page is the only proof the relay has nothing older: a
+            // short page may be short because the relay filtered after LIMIT.
+            let Some(oldest) = reactions.iter().min_by(|left, right| {
+                left.0
+                    .created_at
+                    .cmp(&right.0.created_at)
+                    .then_with(|| right.0.id.cmp(&left.0.id))
+            }) else {
+                exhausted = true;
+                break;
+            };
+            let next = JobPageCursor {
+                created_at: oldest.0.created_at.as_secs(),
+                event_id: oldest.0.id.to_hex(),
+            };
+            for reaction in reactions {
+                if reaction.verify().is_err()
+                    || reaction.0.kind.as_u16() != 7
+                    || !reaction.0.tags.iter().any(|tag| {
+                        tag.kind().to_string() == "e"
+                            && tag
+                                .content()
+                                .is_some_and(|id| targets.iter().any(|t| t == id))
+                    })
+                    || before
+                        .as_ref()
+                        .is_some_and(|cursor| !cursor.precedes(&reaction.0))
+                {
+                    return Err(PublishError::InvalidEvent);
+                }
+                let reacted_to = reacted_to(&reaction.0);
+                if reacted_to.is_some_and(|id| targets.contains(&id))
+                    && messages.len() < wanted
+                    && !messages.iter().any(|kept| kept.0.id == reaction.0.id)
+                {
+                    messages.push(reaction);
+                }
             }
+            if messages.len() == wanted {
+                exhausted = true;
+                break;
+            }
+            before = Some(next);
         }
+        if !exhausted {
+            return Err(PublishError::TooManyReactions);
+        }
+        messages.sort_by(|left, right| {
+            left.0
+                .created_at
+                .cmp(&right.0.created_at)
+                .then_with(|| left.0.id.cmp(&right.0.id))
+        });
         let page = MessagePage {
             messages,
             next_cursor: None,
@@ -722,6 +766,19 @@ fn decode_cursor(
     Ok((until, hex::encode(&payload[9..41])))
 }
 
+/// The event a NIP-25 reaction reacts to, by the relay's own rule: the last
+/// `e` tag whose value is 64 hex characters, lowercased.
+fn reacted_to(reaction: &Event) -> Option<String> {
+    reaction.tags.iter().rev().find_map(|tag| {
+        if tag.kind().to_string() != "e" {
+            return None;
+        }
+        tag.content()
+            .filter(|id| id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()))
+            .map(str::to_ascii_lowercase)
+    })
+}
+
 fn reply_root(parent: &Event) -> Result<nostr::EventId, PublishError> {
     let markers = buzz_core::nip10::parse_thread_markers(&parent.tags);
     let Some((root, _)) = markers.resolve() else {
@@ -757,6 +814,8 @@ pub(crate) enum PublishError {
     InvalidCursor,
     #[error("reaction target is not a message in the requested channel")]
     TargetOutsideChannel,
+    #[error("too many reactions to these targets for one page")]
+    TooManyReactions,
     #[error("relay channel response exceeds the host page cap")]
     ResponseTooLarge,
     #[error("relay publisher is unavailable")]

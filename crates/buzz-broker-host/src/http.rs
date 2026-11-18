@@ -151,6 +151,15 @@ async fn action(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
                     )),
                 ));
             }
+            Err(PublishError::TooManyReactions) => {
+                return broker_response(BrokerResponse::new(
+                    request.request_id(),
+                    BrokerResult::failed(BrokerError::new(
+                        BrokerErrorCode::InvalidRequest,
+                        "too many reactions to these targets; request fewer targets",
+                    )),
+                ));
+            }
             Err(_) => {
                 return broker_response(BrokerResponse::new(
                     request.request_id(),

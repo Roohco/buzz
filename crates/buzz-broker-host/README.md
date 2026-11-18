@@ -150,8 +150,9 @@ relay. Relay membership and channel-access policy remain authoritative. The host
 accepts only signed events matching the requested channel, kind, optional root,
 and optional agent mention. With `reactionsTo`, the host first proves every
 target is a signed kind-9 message in the requested channel (or refuses the
-read), then returns verified kind-7 reactions whose last `e` tag names a
-target, without a cursor. Each relay page is capped at 16 events and 16 MiB;
+read), then returns verified kind-7 reactions whose last 64-hex `e` tag names
+a target, oldest first and without a cursor. It reads up to four relay pages
+to fill the page and refuses the read if they are not enough. Each relay page is capped at 16 events and 16 MiB;
 callers may lower their page limit if a large result exceeds this cap. A full page returns an opaque,
 MAC-protected cursor bound to the filter, relay, signer, and verified owner; the
 next request sends the relay's exact `(until, before_id)` boundary. Exact retries
