@@ -68,6 +68,9 @@ pub const MAX_PAGE_LIMIT: u32 = 500;
 /// it may send unasked.
 pub const DEFAULT_PAGE_LIMIT: u32 = 100;
 
+/// Maximum target events one `channel.read` with `reactionsTo` may name.
+pub const MAX_REACTION_TARGETS: usize = 16;
+
 /// Maximum accepted length of a read cursor, in bytes.
 pub const MAX_CURSOR_LEN: usize = 256;
 
@@ -458,6 +461,29 @@ where
         Some(raw) => Ok(Some(
             event_id(&raw, "identifier").map_err(D::Error::custom)?,
         )),
+        None => Err(D::Error::custom(
+            "must not be null; omit the member to mean absent",
+        )),
+    }
+}
+
+/// [`absent_or_valued_hex64`] for a list member: absent is allowed, `null` is
+/// rejected, and every element is a lowercased 64-hex identifier. Count and
+/// uniqueness are the owning type's `validated()` concern.
+pub(super) fn absent_or_valued_hex64_list<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    match Option::<Vec<String>>::deserialize(deserializer)? {
+        Some(raw) => raw
+            .iter()
+            .map(|id| event_id(id, "identifier").map_err(D::Error::custom))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
         None => Err(D::Error::custom(
             "must not be null; omit the member to mean absent",
         )),

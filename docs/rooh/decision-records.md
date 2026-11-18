@@ -27,6 +27,7 @@ Optional free text: why. It is never stored.
 - In values, spaces and hyphens become `_`, so `Needs rework` and `visual-mismatch` are accepted. Other lines are ignored.
 - **To change a decision, post a new reply.** A later decision by any allowed reviewer on the same result replaces the earlier one in reports. Records are never rewritten; the latest `ts` is in force.
 - Editing a Buzz message (kind 40003) or deleting it (kind 5) does not change the record. The broker's `channel.read` returns only kinds 9, 40002, 40008, 45001 and 45003, so the bridge never sees edits or deletions. A deleted decision stays recorded until a newer reply replaces it.
+- Reactions (kind 7) carry no `h` tag, so a channel read never returns them. `channel.read` with `reactionsTo: [<event id>, …]` returns only the reactions to those events: 1 to 16 ids, and not together with `rootEventId`, `mentionsOnly` or `cursor`. The broker first checks that every id is a signed kind-9 message in `channelId` and refuses the whole read with `invalid_request` otherwise. It returns a verified kind 7 only when its last `e` tag names a requested id; a reaction whose last `e` tag names another event is dropped. The page is newest first, has no cursor, and holds at most 16 reactions; a full page may be truncated, so ask for fewer ids. A reaction removed by a NIP-09 deletion (kind 5) is soft-deleted by the relay and is no longer returned. Mapping an emoji to a verdict is the bridge's job.
 
 ## 2. Label taxonomy
 

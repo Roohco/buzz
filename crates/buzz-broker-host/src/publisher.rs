@@ -334,6 +334,11 @@ impl RelayPublisher {
         community_relay_url: &str,
         args: &ChannelReadArgs,
     ) -> Result<MessagePage, PublishError> {
+        if let Some(targets) = &args.reactions_to {
+            return self
+                .query_reactions(signer, community_relay_url, args, targets)
+                .await;
+        }
         let url = relay_endpoint(community_relay_url, "/query")?;
         let scope = cursor_scope(args, community_relay_url, signer)?;
         let relay_limit = args.effective_limit().min(MAX_READ_PAGE_EVENTS);
@@ -429,6 +434,145 @@ impl RelayPublisher {
             messages,
             next_cursor,
         })
+    }
+
+    /// One page of NIP-25 reactions (kind 7) to `targets`, newest first.
+    ///
+    /// Every target is first proven to be a signed kind-9 message carrying
+    /// exactly one `h` tag for the requested channel; otherwise the read is
+    /// refused, because reactions in this relay carry no `h` tag and the
+    /// target is the only thing tying them to the granted channel. A returned
+    /// event must be a verified kind 7 with an `e` tag naming a target; one
+    /// whose last `e` tag (NIP-25's reacted-to event) is not a target reacts
+    /// to another event and is dropped. The relay soft-deletes a reaction on
+    /// a NIP-09 deletion and `/query` omits it, so no kind 5 is returned.
+    async fn query_reactions(
+        &self,
+        signer: &HostSigner,
+        community_relay_url: &str,
+        args: &ChannelReadArgs,
+        targets: &[String],
+    ) -> Result<MessagePage, PublishError> {
+        let body = self
+            .query_bytes(
+                signer,
+                community_relay_url,
+                &serde_json::json!({
+                    "ids": targets,
+                    "kinds": [9],
+                    "#h": [args.channel_id],
+                    "limit": targets.len(),
+                }),
+            )
+            .await?;
+        let found: Vec<Event> =
+            serde_json::from_slice(&body).map_err(|_| PublishError::InvalidEvent)?;
+        let in_channel = |id: &String| {
+            found.iter().any(|event| {
+                let mut channels = event
+                    .tags
+                    .iter()
+                    .filter(|tag| tag.kind().to_string() == "h");
+                event.id.to_hex() == *id
+                    && event.kind.as_u16() == 9
+                    && event.verify().is_ok()
+                    && channels.next().and_then(|tag| tag.content())
+                        == Some(args.channel_id.as_str())
+                    && channels.next().is_none()
+            })
+        };
+        if found.len() > targets.len() || !targets.iter().all(in_channel) {
+            return Err(PublishError::TargetOutsideChannel);
+        }
+
+        let relay_limit = args.effective_limit().min(MAX_READ_PAGE_EVENTS);
+        let body = self
+            .query_bytes(
+                signer,
+                community_relay_url,
+                &serde_json::json!({
+                    "kinds": [7],
+                    "#e": targets,
+                    "limit": relay_limit,
+                }),
+            )
+            .await?;
+        let reactions: Vec<BrokerMessage> =
+            serde_json::from_slice(&body).map_err(|_| PublishError::InvalidEvent)?;
+        if reactions.len() > relay_limit as usize {
+            return Err(PublishError::InvalidEvent);
+        }
+        let mut messages = Vec::with_capacity(reactions.len());
+        for reaction in reactions {
+            let referenced: Vec<&str> = reaction
+                .0
+                .tags
+                .iter()
+                .filter(|tag| tag.kind().to_string() == "e")
+                .filter_map(|tag| tag.content())
+                .collect();
+            if reaction.verify().is_err()
+                || reaction.0.kind.as_u16() != 7
+                || !referenced.iter().any(|id| targets.iter().any(|t| t == id))
+            {
+                return Err(PublishError::InvalidEvent);
+            }
+            if referenced
+                .last()
+                .is_some_and(|id| targets.iter().any(|t| t == id))
+            {
+                messages.push(reaction);
+            }
+        }
+        let page = MessagePage {
+            messages,
+            next_cursor: None,
+        };
+        ActionOutcome::ChannelRead(page.clone())
+            .validate()
+            .map_err(|_| PublishError::InvalidEvent)?;
+        Ok(page)
+    }
+
+    /// POST one filter to the relay's `/query` under host NIP-98 auth and
+    /// return the body, capped at the read response limit.
+    async fn query_bytes(
+        &self,
+        signer: &HostSigner,
+        community_relay_url: &str,
+        filter: &serde_json::Value,
+    ) -> Result<Vec<u8>, PublishError> {
+        let url = relay_endpoint(community_relay_url, "/query")?;
+        let body = serde_json::to_vec(&serde_json::json!([filter]))
+            .map_err(|_| PublishError::InvalidEvent)?;
+        let authorization = signer
+            .nip98_authorization(url.as_str(), &body)
+            .map_err(|_| PublishError::Unavailable)?;
+        let mut response = self
+            .client
+            .post(url)
+            .header("authorization", authorization)
+            .header("x-auth-tag", signer.auth_tag_json())
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|_| PublishError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(PublishError::Unavailable);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| PublishError::Unavailable)?
+        {
+            if chunk.len() > MAX_READ_RESPONSE_BYTES - bytes.len() {
+                return Err(PublishError::ResponseTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     pub(crate) async fn publish(
@@ -611,6 +755,8 @@ pub(crate) enum PublishError {
     InvalidEvent,
     #[error("channel cursor is invalid for this scope")]
     InvalidCursor,
+    #[error("reaction target is not a message in the requested channel")]
+    TargetOutsideChannel,
     #[error("relay channel response exceeds the host page cap")]
     ResponseTooLarge,
     #[error("relay publisher is unavailable")]

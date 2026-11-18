@@ -351,6 +351,7 @@ impl BrokerPoller {
                         mentions_only,
                         cursor: self.cursors.get(&channel_id).cloned(),
                         limit: Some(100),
+                        reactions_to: None,
                     }))
                     .await;
                 let page = match result {
