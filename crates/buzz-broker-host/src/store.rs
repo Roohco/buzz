@@ -79,7 +79,15 @@ enum ReceiptMatch {
 
 #[cfg(unix)]
 pub(crate) enum EffectAdmission {
-    Pending(nostr::Event, String, bool),
+    /// Journaled event, its relay URL, and whether the row already existed
+    /// before this admission. Production decides "first submission" from the
+    /// `publish_attempted` flag under the publication lock; the flag here is
+    /// kept for tests that assert journaling behaviour.
+    Pending(
+        nostr::Event,
+        String,
+        #[cfg_attr(not(test), allow(dead_code))] bool,
+    ),
     Completed(BrokerResponse),
     NeedsReplyTarget(String),
     Conflict,
