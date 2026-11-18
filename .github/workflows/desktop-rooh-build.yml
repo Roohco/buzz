@@ -1,0 +1,70 @@
+name: Desktop Rooh build
+
+# Builds the unsigned "Buzz Rooh" macOS app (BUZZ_DESKTOP_FLAVOR=rooh +
+# tauri.rooh.conf.json): own bundle id, keyring service and agent nest, no
+# updater, stub sidecars (Rooh agents run server-side). See
+# docs/rooh/desktop-rooh-build.md. Publishes nothing; the .app is a run artifact.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/desktop-rooh-build.yml
+      - desktop/src-tauri/tauri.rooh.conf.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-rooh-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Buzz Rooh (macOS arm64)
+    if: github.repository == 'Roohco/buzz'
+    runs-on: macos-latest
+    timeout-minutes: 75
+    env:
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+
+      - name: Add Rust target
+        run: rustup target add "$TARGET"
+
+      - name: Install desktop dependencies
+        run: just desktop-install-ci
+
+      - name: Stub sidecars
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          for b in buzz-acp buzz-agent buzz-backend-kubernetes buzz-broker-host buzz-dev-mcp git-credential-nostr buzz; do
+            : > "desktop/src-tauri/binaries/$b-$TARGET"
+            chmod +x "desktop/src-tauri/binaries/$b-$TARGET"
+          done
+
+      - name: Build unsigned Buzz Rooh.app
+        run: cd desktop && pnpm tauri build --no-sign --target "$TARGET" --bundles app --config src-tauri/tauri.rooh.conf.json
+        env:
+          BUZZ_DESKTOP_FLAVOR: rooh
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+      - name: Package app
+        run: |
+          APP="desktop/src-tauri/target/${TARGET}/release/bundle/macos/Buzz Rooh.app"
+          test -d "$APP"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" | grep -qx co.rooh.buzz.desktop
+          ditto -c -k --keepParent "$APP" buzz-rooh-macos-arm64.zip
+          shasum -a 256 buzz-rooh-macos-arm64.zip | tee buzz-rooh-macos-arm64.zip.sha256
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: buzz-rooh-macos-arm64
+          path: |
+            buzz-rooh-macos-arm64.zip
+            buzz-rooh-macos-arm64.zip.sha256
+          retention-days: 14

@@ -55,7 +55,9 @@ pub(super) fn migration_marker_name(service: &str, default_name: &str) -> String
 
 #[cfg(test)]
 mod tests {
-    use super::{dev_keyring_service, is_valid_flavor, migration_marker_name, release_keyring_service};
+    use super::{
+        dev_keyring_service, is_valid_flavor, migration_marker_name, release_keyring_service,
+    };
 
     #[test]
     fn flavored_release_build_uses_its_own_service() {
