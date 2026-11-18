@@ -1,0 +1,96 @@
+# cargo-deny policy for the desktop workspace (desktop/src-tauri is excluded
+# from the root workspace, so the root deny.toml check never sees its lockfile).
+# CI runs only the advisories check here, with --all-features so the
+# `mesh-llm` release builds are covered:
+#   cargo-deny --manifest-path desktop/src-tauri/Cargo.toml --all-features \
+#     check --config desktop/src-tauri/deny.toml advisories
+#
+# Every ignore below is a transitive item with no semver-compatible fix in the
+# lockfile. Fixable advisories are fixed with `cargo update`, not ignored.
+
+[advisories]
+ignore = [
+    # --- Same advisories the root deny.toml ignores, re-checked for the
+    # desktop dependency paths. ---
+    # chrono is unmaintained, not vulnerable. Direct dependency of
+    # buzz-core/buzz-media/desktop; removal needs a time/jiff migration.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, not vulnerable; direct dependency; removal needs a time/jiff migration" },
+    # instant 0.1.13: unmaintained, via nostr (buzz-core / buzz-sdk).
+    { id = "RUSTSEC-2024-0384", reason = "instant unmaintained, transitive via nostr; no upstream fix available" },
+    # paste 1.0.15: unmaintained, via iroh → netwatch → netdev → netlink-*.
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, transitive via iroh → netlink; no upstream fix available" },
+    # unsafe-libyaml: unmaintained, via serde_yaml (buzz-agent, buzz-persona,
+    # desktop). Removal needs a YAML parser migration.
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained, not vulnerable, via serde_yaml; removal needs a YAML parser migration" },
+    # quick-xml 0.38.4 via rust-s3/aws-creds, reached only through buzz-media as
+    # a desktop dev-dependency (tests), parsing responses from our own S3/MinIO.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml via rust-s3 in a dev-dependency only; trusted-input XML; no upstream fix available yet" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml via rust-s3 in a dev-dependency only; trusted-input XML; no upstream fix available yet" },
+    # rmcp 1.8 via buzz-agent, which declares it with default-features=false
+    # and client + transport-child-process only; the affected Streamable HTTP
+    # client transport is not compiled.
+    { id = "RUSTSEC-2026-0462", reason = "rmcp 1.8 only in buzz-agent's subprocess client; vulnerable Streamable HTTP transport features disabled" },
+    # SQLite crafted database/WAL disclosure: needs opening an attacker-supplied
+    # db/WAL. Desktop (rusqlite 0.40, bundled) opens only its own app-data
+    # stores (archive, channel-head cache, observed-unread) it creates under the
+    # user's app data directory; mesh-llm-log-store likewise opens its own log
+    # db. The fix (libsqlite3-sys >= 0.39) needs rusqlite 0.41, and
+    # libsqlite3-sys `links = "sqlite3"` forbids a second copy while mesh-llm
+    # v0.76.2 pins rusqlite 0.40. Remove when mesh-llm and desktop move together.
+    { id = "RUSTSEC-2026-0459", reason = "SQLite only opens desktop's own app-data dbs and mesh-llm's own log db; fix needs rusqlite 0.41, blocked by mesh-llm v0.76.2 pin (links = sqlite3)" },
+
+    # --- Desktop-only items. ---
+
+    # zip 4.6.1 via tauri-plugin-updater 2.10.1 (its default `zip` feature;
+    # latest stable 2.x still requires zip 4). The updater calls
+    # ZipArchive::extract only on Windows, on an update archive whose minisign
+    # signature it has already verified. The plugin is registered only when
+    # BUZZ_UPDATER_PUBLIC_KEY and BUZZ_UPDATER_ENDPOINT are set at build time
+    # (cfg buzz_updater_enabled); the Rooh flavored build sets neither, so the
+    # code is never reached there. Remove when tauri-plugin-updater moves to
+    # zip >= 9.0.5 or the `zip` feature is turned off.
+    #
+    # zip 8.6.0 via mesh-llm v0.76.2 (mesh-llm-host-runtime,
+    # mesh-llm-plugin-manager, mesh-llm-system), only with --features mesh-llm.
+    # mesh-llm builds zip with `deflate` only, reads archives through
+    # ZipArchive and copies entries by hand: it never calls extract(), never
+    # decrypts AES (`aes-crypto` off), never enables `legacy-zip`, never uses
+    # ZipStreamReader. mesh-llm v0.79.0 ships zip 9.0.5 but drops mesh-llm-sdk's
+    # `client` feature, so the bump needs an SDK migration. Remove on that bump.
+    #
+    # The direct desktop dependency (managed Node.js extraction) is zip 9.0.5.
+    { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 4.6.1 (tauri-plugin-updater, signed Windows archives, plugin off in Rooh build) and zip 8.6.0 (mesh-llm v0.76.2, never extracts)" },
+    { id = "RUSTSEC-2026-0545", reason = "zip 4.6.1 (tauri-plugin-updater, unencrypted signed archives) and zip 8.6.0 (mesh-llm v0.76.2, aes-crypto off)" },
+    { id = "RUSTSEC-2026-0546", reason = "zip 8.6.0 via mesh-llm v0.76.2 only; never extracts; fixed in mesh-llm v0.79.0 (needs SDK migration)" },
+    { id = "RUSTSEC-2026-0547", reason = "zip 8.6.0 via mesh-llm v0.76.2 only; legacy-zip feature off" },
+    { id = "RUSTSEC-2026-0548", reason = "zip 4.6.1 (tauri-plugin-updater, ZipArchive only) and zip 8.6.0 (mesh-llm v0.76.2); no ZipStreamReader use" },
+
+    # ringbuf 0.3.3 via neteq 0.8.3, which declares ringbuf but never references
+    # it from its Rust sources, so Consumer::skip/clear are unreachable. The fix
+    # is ringbuf 0.5.2 (semver-incompatible with neteq's ^0.3). Remove when
+    # NetEQ drops or updates the dependency.
+    { id = "RUSTSEC-2026-0293", reason = "unused dependency of neteq 0.8.3; no Rust references to ringbuf; fix needs ringbuf 0.5" },
+
+    # Unmaintained, not vulnerable; no maintained release to move to.
+    # humantime: mesh-llm → hf-xet → xet-runtime (--features mesh-llm only).
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained, not vulnerable; via mesh-llm → xet-runtime; no maintained release" },
+    # mach 0.1.2 / 0.3.2: user-idle 0.6 (macOS idle time) and its IOKit-sys.
+    { id = "RUSTSEC-2020-0168", reason = "mach unmaintained, not vulnerable; via user-idle 0.6; no maintained user-idle release" },
+    # audiopus_sys: opus 0.3 bindings for huddle audio.
+    { id = "RUSTSEC-2026-0150", reason = "audiopus_sys unmaintained, not vulnerable; via opus 0.3; no maintained release" },
+    # proc-macro-error: build-time macro of the gtk3 bindings tauri uses on Linux.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, build-time only; via tauri → gtk 0.18 bindings" },
+    # unic-*: tauri-utils → urlpattern 0.3.
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range unmaintained, not vulnerable; via tauri-utils → urlpattern" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common unmaintained, not vulnerable; via tauri-utils → urlpattern" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property unmaintained, not vulnerable; via tauri-utils → urlpattern" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, not vulnerable; via tauri-utils → urlpattern" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident unmaintained, not vulnerable; via tauri-utils → urlpattern" },
+    # zbus 5 D-Bus crates: notify-rust and the keyring secret-service store (Linux).
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, not vulnerable; via zbus 5 (notify-rust, keyring secret-service)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, not vulnerable; via zbus 5 (notify-rust, keyring secret-service)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, not vulnerable; via zbus 5 (notify-rust, keyring secret-service)" },
+]

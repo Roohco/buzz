@@ -32,6 +32,10 @@ ignore = [
     # remove these when upstream catches up.
     { id = "RUSTSEC-2026-0194", reason = "transitive via rust-s3 and mesh-llm→plist; trusted-input XML only; no upstream fix available yet" },
     { id = "RUSTSEC-2026-0195", reason = "transitive via rust-s3 and mesh-llm→plist; trusted-input XML only; no upstream fix available yet" },
+    # chrono — unmaintained, not vulnerable (RUSTSEC-2026-0543). Direct workspace
+    # dependency of most crates; no maintained release. Removal needs a
+    # time/jiff migration. Same entry as upstream block/buzz 66b463fb2.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, not vulnerable; direct workspace dependency; removal needs a time/jiff migration" },
     # unsafe-libyaml 0.2.11 — unmaintained (repository archived 2024-03-25), not a
     # vulnerability report. Transitive dep: serde_yaml → unsafe-libyaml (buzz-agent,
     # buzz-persona, buzz-relay, buzz-workflow, kube-client). The serde_yaml_ng fork
